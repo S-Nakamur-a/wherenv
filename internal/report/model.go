@@ -13,6 +13,9 @@ const (
 	Inherited
 	// Unset means the variable is not present in env and was not seen in any startup file.
 	Unset
+	// Toolset means the variable was set by a developer tool (e.g. direnv) and its
+	// origin has been proven by inspecting tool-specific environment metadata.
+	Toolset
 )
 
 // AssignmentSite is one location in a startup file where an assignment occurred.
@@ -39,6 +42,16 @@ type Verdict struct {
 	HasAppend bool
 }
 
+// ToolSource carries provenance information for a variable set by a developer
+// tool (Origin == Toolset). Tool is the tool name (e.g. "direnv"), File is the
+// configuration file that set the variable (e.g. the .envrc path), and Value is
+// the raw variable value as recorded by the tool.
+type ToolSource struct {
+	Tool  string
+	File  string
+	Value string
+}
+
 // Finding is the top-level result for a single variable name.
 type Finding struct {
 	Name    string
@@ -47,6 +60,8 @@ type Finding struct {
 	Verdict Verdict          // only meaningful when Origin == Startup
 	// InheritedSource is set by the inherit probe (Step 8); may be empty.
 	InheritedSource string
+	// ToolSource is set when Origin == Toolset; nil otherwise.
+	ToolSource *ToolSource
 	// SentinelMissing is true for any mode where SentinelSeen was false,
 	// meaning the trace may be incomplete.
 	SentinelMissing bool

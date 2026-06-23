@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/S-Nakamur-a/wherenv/internal/classify"
+	"github.com/S-Nakamur-a/wherenv/internal/direnv"
 	"github.com/S-Nakamur-a/wherenv/internal/env"
 	"github.com/S-Nakamur-a/wherenv/internal/inherit"
 	"github.com/S-Nakamur-a/wherenv/internal/report"
@@ -160,14 +161,9 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// ── Classify ──────────────────────────────────────────────────────────────
 	findings := classify.Classify(results, snap, keys)
 
-	// ── Inherit probe (Step 8): launchctl getenv for Inherited variables ──────
-	// S5: inherit.Probe calls exec.Command with name as a separate arg (no shell).
+	// ── Tool probe: direnv → Inherited fallback ───────────────────────────────
 	// S1: all names were already validated above.
-	for i := range findings {
-		if findings[i].Origin == report.Inherited {
-			findings[i].InheritedSource = inherit.Probe(findings[i].Name)
-		}
-	}
+	elevateOrigins(findings, snap, inherit.Probe)
 
 	// ── Report ────────────────────────────────────────────────────────────────
 	opts := report.Options{
@@ -185,10 +181,35 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// Hint how to reveal values — only interactively (TTY), only when values were
 	// actually hidden, and not in JSON mode. Keeps pipes/scripts clean.
 	if !opts.ShowValue && !opts.FullValue && !opts.JSON &&
-		isTerminalWriter(stdout) && report.AnyStartupValue(findings) {
+		isTerminalWriter(stdout) &&
+		(report.AnyStartupValue(findings) || report.AnyToolsetValue(findings)) {
 		fmt.Fprintln(stderr, "(values hidden; pass -v to show, --full-value for untruncated)")
 	}
 	return 0
+}
+
+// elevateOrigins iterates over findings and, for each Inherited variable,
+// checks in order: (1) direnv probe — if it matches, the finding is promoted
+// to Toolset (proven provenance); (2) launchctl probe via launchctlProbe —
+// fills InheritedSource for macOS session-level variables. Only Inherited
+// findings are touched; Startup/Unset/Toolset pass through unchanged.
+//
+// The launchctlProbe parameter is injected so callers in tests can supply a
+// stub without spawning exec.Command (S5 is the caller's responsibility).
+func elevateOrigins(findings []report.Finding, snap map[string]string, launchctlProbe func(string) string) {
+	for i := range findings {
+		if findings[i].Origin != report.Inherited {
+			continue
+		}
+		if src, ok := direnv.Probe(snap, findings[i].Name); ok {
+			// direnv: proven provenance — elevate to Toolset, skip launchctl.
+			findings[i].Origin = report.Toolset
+			findings[i].ToolSource = &src
+			continue
+		}
+		// S5: launchctlProbe calls exec.Command with name as a separate arg (no shell).
+		findings[i].InheritedSource = launchctlProbe(findings[i].Name)
+	}
 }
 
 // isTerminalWriter reports whether w is a character device (a TTY). Used to
