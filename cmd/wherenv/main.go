@@ -1,0 +1,213 @@
+package main
+
+import (
+	"context"
+	"flag"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"regexp"
+	"time"
+
+	"github.com/S-Nakamur-a/wherenv/internal/classify"
+	"github.com/S-Nakamur-a/wherenv/internal/env"
+	"github.com/S-Nakamur-a/wherenv/internal/inherit"
+	"github.com/S-Nakamur-a/wherenv/internal/report"
+	"github.com/S-Nakamur-a/wherenv/internal/tracer"
+)
+
+// validKey is the regex for S1: valid environment variable names.
+var validKey = regexp.MustCompile(`^[A-Za-z_][A-Za-z0-9_]*$`)
+
+func main() {
+	os.Exit(run(os.Args[1:], os.Getenv, os.Stdout, os.Stderr))
+}
+
+// run is the testable entry point. args are the CLI arguments (without argv[0]),
+// getenv is used for SHELL lookup, stdout/stderr receive output.
+func run(args []string, getenv func(string) string, stdout, stderr io.Writer) int {
+	// ── Flags ──────────────────────────────────────────────────────────────────
+	fs := flag.NewFlagSet("wherenv", flag.ContinueOnError)
+	fs.SetOutput(stderr)
+	showValue := fs.Bool("show-value", false, "reveal variable values (truncated at 120 chars); hidden by default")
+	fullValue := fs.Bool("full-value", false, "reveal full, untruncated variable values")
+	asJSON := fs.Bool("json", false, "emit JSON output")
+	timeoutSec := fs.Float64("timeout", 8.0, "per-spawn timeout in seconds")
+	modeFlag := fs.String("mode", "login", "shell mode(s) to trace: login | non-login | both")
+	colorFlag := fs.String("color", "auto", "colorize output: auto | always | never")
+	fs.BoolVar(showValue, "v", false, "shorthand for --show-value")
+	fs.Usage = func() {
+		fmt.Fprintln(stderr, "usage: wherenv [flags] VARNAME [VARNAME...]")
+		fmt.Fprintln(stderr, "Values are hidden by default; pass -v to reveal them.")
+		fmt.Fprintln(stderr, "WARNING: wherenv executes your real shell startup files as a side effect of tracing.")
+		fs.PrintDefaults()
+	}
+	if err := fs.Parse(args); err != nil {
+		// ContinueOnError: fs.Parse writes the error to stderr; we return 2.
+		return 2
+	}
+	keys := fs.Args()
+
+	if len(keys) == 0 {
+		fs.Usage()
+		return 2
+	}
+
+	// ── Validate --timeout ────────────────────────────────────────────────────
+	if *timeoutSec <= 0 {
+		fmt.Fprintln(stderr, "wherenv: --timeout must be > 0")
+		return 2
+	}
+
+	// ── Resolve --mode into the list of modes to trace ─────────────────────────
+	// Default is login: on zsh a login-interactive shell is a SUPERSET of
+	// non-login (it also sources .zshrc), and matches how macOS terminals start.
+	var modes []tracer.Mode
+	switch *modeFlag {
+	case "login":
+		modes = []tracer.Mode{tracer.Login}
+	case "non-login":
+		modes = []tracer.Mode{tracer.NonLogin}
+	case "both":
+		modes = []tracer.Mode{tracer.NonLogin, tracer.Login}
+	default:
+		fmt.Fprintf(stderr, "wherenv: invalid --mode %q (want login | non-login | both)\n", *modeFlag)
+		return 2
+	}
+
+	// ── Resolve --color ────────────────────────────────────────────────────────
+	var colorize bool
+	switch *colorFlag {
+	case "always":
+		colorize = true
+	case "never":
+		colorize = false
+	case "auto":
+		colorize = isTerminalWriter(stdout) && getenv("NO_COLOR") == ""
+	default:
+		fmt.Fprintf(stderr, "wherenv: invalid --color %q (want auto | always | never)\n", *colorFlag)
+		return 2
+	}
+
+	// ── S1: validate all keys before doing anything else ──────────────────────
+	for _, key := range keys {
+		if !validKey.MatchString(key) {
+			fmt.Fprintf(stderr, "wherenv: invalid variable name %q (must match ^[A-Za-z_][A-Za-z0-9_]*$)\n", key)
+			return 2
+		}
+	}
+
+	// ── Env snapshot ──────────────────────────────────────────────────────────
+	snap := env.Snapshot()
+
+	// keysSet used by tracers (S2: never interpolated into shell argv).
+	keysSet := make(map[string]struct{}, len(keys))
+	for _, k := range keys {
+		keysSet[k] = struct{}{}
+	}
+
+	timeout := time.Duration(*timeoutSec * float64(time.Second))
+	ctx, cancel := context.WithTimeout(context.Background(), timeout*3) // outer budget = 3× per-spawn
+	defer cancel()
+
+	// ── Select tracer based on $SHELL ─────────────────────────────────────────
+	shellBin := filepath.Base(getenv("SHELL"))
+	var tr tracer.Tracer
+	switch shellBin {
+	case "zsh":
+		tr = tracer.ZshTracer()
+	case "bash":
+		tr = tracer.BashTracer()
+	}
+
+	var results []tracer.TraceResult
+
+	if tr != nil && tr.Available() {
+		// Progress feedback: tracing spawns a real shell and can take a moment.
+		// Show an animated spinner that names the current step — but only on a
+		// TTY (keeps pipes/JSON consumers clean). Warnings are collected and
+		// printed after the spinner is cleared so they don't garble the line.
+		var sp *spinner
+		if isTerminalWriter(stderr) {
+			sp = startSpinner(stderr, "tracing "+shellBin+" startup…")
+		}
+		var warnings []string
+		// Run the selected mode(s).
+		for _, mode := range modes {
+			if sp != nil {
+				sp.setLabel(fmt.Sprintf("tracing %s startup (%s)…", shellBin, modeLabel(mode)))
+			}
+			r, err := tr.Trace(ctx, mode, keysSet, timeout)
+			if err != nil {
+				// Non-fatal: timeout or partial trace; use whatever we got.
+				warnings = append(warnings, fmt.Sprintf("wherenv: %s %s trace warning: %v", tr.Name(), modeLabel(mode), err))
+			}
+			results = append(results, r)
+		}
+		if sp != nil {
+			sp.stopAndClear()
+		}
+		for _, wmsg := range warnings {
+			fmt.Fprintln(stderr, wmsg)
+		}
+	} else {
+		// Unsupported or unavailable shell: degrade gracefully.
+		shell := getenv("SHELL")
+		fmt.Fprintf(stderr, "wherenv: unsupported shell %q — startup tracing skipped; classifying from env only\n", shell)
+	}
+
+	// ── Classify ──────────────────────────────────────────────────────────────
+	findings := classify.Classify(results, snap, keys)
+
+	// ── Inherit probe (Step 8): launchctl getenv for Inherited variables ──────
+	// S5: inherit.Probe calls exec.Command with name as a separate arg (no shell).
+	// S1: all names were already validated above.
+	for i := range findings {
+		if findings[i].Origin == report.Inherited {
+			findings[i].InheritedSource = inherit.Probe(findings[i].Name)
+		}
+	}
+
+	// ── Report ────────────────────────────────────────────────────────────────
+	opts := report.Options{
+		JSON:      *asJSON,
+		ShowValue: *showValue || *fullValue,
+		FullValue: *fullValue,
+		Color:     colorize,
+		ShowModes: len(modes) > 1,
+	}
+	if err := report.Print(stdout, findings, opts); err != nil {
+		fmt.Fprintln(stderr, "wherenv:", err)
+		return 1
+	}
+
+	// Hint how to reveal values — only interactively (TTY), only when values were
+	// actually hidden, and not in JSON mode. Keeps pipes/scripts clean.
+	if !opts.ShowValue && !opts.FullValue && !opts.JSON &&
+		isTerminalWriter(stdout) && report.AnyStartupValue(findings) {
+		fmt.Fprintln(stderr, "(values hidden; pass -v to show, --full-value for untruncated)")
+	}
+	return 0
+}
+
+// isTerminalWriter reports whether w is a character device (a TTY). Used to
+// gate interactive progress output so pipes and JSON consumers stay clean.
+func isTerminalWriter(w io.Writer) bool {
+	f, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	fi, err := f.Stat()
+	if err != nil {
+		return false
+	}
+	return fi.Mode()&os.ModeCharDevice != 0
+}
+
+func modeLabel(m tracer.Mode) string {
+	if m == tracer.Login {
+		return "login"
+	}
+	return "non-login"
+}

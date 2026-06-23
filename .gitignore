@@ -1,0 +1,17 @@
+# Build artifacts
+/bin/
+
+# Private design notes / internal docs — not for publication
+/docs/private/
+
+# Local tooling state
+/.conductor/
+.mado/
+
+# Go test / coverage
+*.test
+*.out
+coverage.txt
+
+# macOS
+.DS_Store
