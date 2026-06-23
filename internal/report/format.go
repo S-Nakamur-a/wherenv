@@ -42,12 +42,20 @@ func Print(w io.Writer, findings []Finding, opts Options) error {
 
 // jsonFinding is the stable JSON structure emitted for ADR-7.
 type jsonFinding struct {
-	Name            string         `json:"name"`
-	Origin          string         `json:"origin"`
-	Sites           []jsonSite     `json:"sites,omitempty"`
-	Verdict         *jsonVerdict   `json:"verdict,omitempty"`
-	InheritedSource string         `json:"inherited_source,omitempty"`
-	SentinelMissing bool           `json:"sentinel_missing,omitempty"`
+	Name            string          `json:"name"`
+	Origin          string          `json:"origin"`
+	Sites           []jsonSite      `json:"sites,omitempty"`
+	Verdict         *jsonVerdict    `json:"verdict,omitempty"`
+	InheritedSource string          `json:"inherited_source,omitempty"`
+	ToolSource      *jsonToolSource `json:"tool_source,omitempty"`
+	SentinelMissing bool            `json:"sentinel_missing,omitempty"`
+}
+
+// jsonToolSource is the JSON representation of a ToolSource (ADR-8).
+type jsonToolSource struct {
+	Tool  string `json:"tool"`
+	File  string `json:"file,omitempty"`
+	Value string `json:"value,omitempty"`
 }
 
 type jsonSite struct {
@@ -82,6 +90,19 @@ func printJSON(w io.Writer, findings []Finding, opts Options) error {
 		for _, s := range f.Sites {
 			js := siteToJSON(s, opts)
 			jf.Sites = append(jf.Sites, js)
+		}
+		if f.Origin == Toolset && f.ToolSource != nil {
+			ts := f.ToolSource
+			jts := &jsonToolSource{
+				Tool: ts.Tool,
+				File: sanitize(ts.File),
+			}
+			if opts.ShowValue || opts.FullValue {
+				jts.Value = sanitize(ts.Value)
+			} else if ts.Value != "" {
+				jts.Value = valueHidden
+			}
+			jf.ToolSource = jts
 		}
 		if f.Origin == Startup && len(f.Verdict.PerMode) > 0 {
 			jv := &jsonVerdict{
@@ -150,12 +171,26 @@ func AnyStartupValue(findings []Finding) bool {
 	return false
 }
 
+// AnyToolsetValue reports whether any finding is a Toolset origin with a
+// non-empty value. Used by the CLI to extend the "values hidden" hint to
+// direnv-set variables.
+func AnyToolsetValue(findings []Finding) bool {
+	for _, f := range findings {
+		if f.Origin == Toolset && f.ToolSource != nil && f.ToolSource.Value != "" {
+			return true
+		}
+	}
+	return false
+}
+
 func printOneFinding(w io.Writer, f Finding, opts Options) error {
 	switch f.Origin {
 	case Startup:
 		return printStartup(w, f, opts)
 	case Inherited:
 		return printInherited(w, f, opts)
+	case Toolset:
+		return printToolset(w, f, opts)
 	case Unset:
 		pal := palette{on: opts.Color}
 		fmt.Fprintf(w, "%s: %s\n", pal.name(f.Name), pal.bad("not set"))
@@ -300,6 +335,47 @@ func printInherited(w io.Writer, f Finding, opts Options) error {
 	return nil
 }
 
+func printToolset(w io.Writer, f Finding, opts Options) error {
+	pal := palette{on: opts.Color}
+
+	if f.ToolSource == nil {
+		// Should not happen in practice; degrade gracefully with a generic header.
+		fmt.Fprintf(w, "%s: set by tool\n", pal.name(f.Name))
+		fmt.Fprintln(w, pal.dim("  → source path unavailable"))
+		return nil
+	}
+
+	// Header uses ToolSource.Tool so future tools (mise, etc.) render correctly.
+	fmt.Fprintf(w, "%s: set by %s\n", pal.name(f.Name), f.ToolSource.Tool)
+
+	if f.ToolSource.File != "" {
+		fmt.Fprintf(w, "  %s\n", pal.loc("→ from .envrc:  "+sanitize(f.ToolSource.File)))
+	} else {
+		fmt.Fprintln(w, pal.dim("  → set by direnv (source path unavailable: DIRENV_FILE not set)"))
+	}
+
+	fmt.Fprintln(w, pal.dim("  (direnv loads this in the current directory, after your shell startup — directory-scoped)"))
+
+	if (opts.ShowValue || opts.FullValue) && f.ToolSource.Value != "" {
+		fmt.Fprintf(w, "  %s\n", pal.dim("→  "+sanitizeToolValue(f.ToolSource.Value, opts)))
+	}
+	return nil
+}
+
+// sanitizeToolValue applies sanitize and optional truncation to a raw tool
+// value (not a shell assignment line, so redactValue is not applicable).
+func sanitizeToolValue(v string, opts Options) string {
+	s := sanitize(v)
+	if opts.FullValue {
+		return s
+	}
+	runes := []rune(s)
+	if len(runes) > maxRawCodeDefault {
+		return string(runes[:maxRawCodeDefault]) + "…"
+	}
+	return s
+}
+
 // ── Formatting helpers ────────────────────────────────────────────────────────
 
 // formatFileLine formats a site's file:line with appropriate caveats for
@@ -397,6 +473,8 @@ func originString(o Origin) string {
 		return "inherited"
 	case Unset:
 		return "unset"
+	case Toolset:
+		return "toolset"
 	}
 	return "unknown"
 }

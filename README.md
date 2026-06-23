@@ -128,10 +128,16 @@ variable was assigned, recording the file and line for every assignment.
 - **Login vs non-login**: the two modes read different files (e.g. `.zprofile`
   is login-only). Each result is tagged with the mode(s) it appeared in rather
   than blended together.
-- **Inherited variables**: if nothing in startup assigns a variable but it
-  exists in your environment, it was inherited from the parent process
-  (terminal, `launchd`, login session). On macOS, `launchctl getenv` is probed
-  to identify a system-level source.
+- **Tool-set variables**: after tracing startup files, `wherenv` probes
+  developer tools that set environment variables through hooks rather than
+  startup files. Currently supported: **direnv** — the `DIRENV_DIFF` variable
+  is decoded to identify which variables were loaded from the current `.envrc`,
+  and their source file is reported. More tools (mise, etc.) may be added in
+  future versions.
+- **Inherited variables**: if nothing in startup or a known tool assigns a
+  variable but it exists in your environment, it was inherited from the parent
+  process (terminal, `launchd`, login session). On macOS, `launchctl getenv`
+  is probed to identify a system-level source.
 
 There's a deeper write-up of the mechanism and design trade-offs if you're
 curious about the internals — see the project's design notes.
@@ -217,8 +223,14 @@ MY_VAR: not set
   capped at 99 bytes. With long file paths the exact line number can be lost;
   `wherenv` keeps the file and marks the line as approximate / uncertain. bash
   4+ (e.g. via Homebrew) gives exact line numbers.
-- **`direnv` / `mise` are not traced** — they activate through hooks outside the
-  standard startup sequence.
+- **`direnv`** — when direnv is active, `wherenv` reads the `DIRENV_DIFF`
+  environment variable to identify which variables were loaded from the current
+  `.envrc` and reports their source file. Variables set by direnv appear as
+  `set by direnv` rather than `inherited`. Note: this relies on `DIRENV_DIFF`
+  being present in the environment; if direnv is not active in the current
+  directory no direnv-specific output is shown.
+- **`mise` and other version managers are not traced** — they activate through
+  hooks outside the standard startup sequence.
 - **Interactively-typed exports can't be traced** — a variable you `export` by
   hand in a session isn't part of any startup file; it may show up as
   `inherited`.

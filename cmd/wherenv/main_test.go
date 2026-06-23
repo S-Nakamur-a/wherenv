@@ -1,8 +1,14 @@
 package main
 
 import (
+	"bytes"
+	"compress/zlib"
+	"encoding/base64"
+	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/S-Nakamur-a/wherenv/internal/report"
 )
 
 // runCapture is a test helper that calls run() with isolated stdout/stderr.
@@ -117,6 +123,116 @@ func TestRunTimeoutNegativeIsRejected(t *testing.T) {
 	}
 	if !strings.Contains(errOut, "--timeout must be > 0") {
 		t.Errorf("expected timeout error in stderr; got %q", errOut)
+	}
+}
+
+// ── elevateOrigins unit tests (exec-free) ────────────────────────────────────
+
+// makeDiffForMain encodes prev/next maps as a DIRENV_DIFF value (zlib+base64url)
+// so these tests do not require direnv to be installed.
+func makeDiffForMain(t *testing.T, next map[string]string) string {
+	t.Helper()
+	payload := map[string]map[string]string{"p": {}, "n": next}
+	jsonBytes, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("json.Marshal: %v", err)
+	}
+	var buf bytes.Buffer
+	w := zlib.NewWriter(&buf)
+	if _, err := w.Write(jsonBytes); err != nil {
+		t.Fatalf("zlib write: %v", err)
+	}
+	if err := w.Close(); err != nil {
+		t.Fatalf("zlib close: %v", err)
+	}
+	return base64.URLEncoding.EncodeToString(buf.Bytes())
+}
+
+// TestElevateOriginsStartupNotTouched verifies the most important invariant:
+// a Startup variable that also appears in DIRENV_DIFF n is NOT elevated to
+// Toolset. direnv must never override startup-traced provenance.
+func TestElevateOriginsStartupNotTouched(t *testing.T) {
+	diff := makeDiffForMain(t, map[string]string{"MY_VAR": "hello"})
+	snap := map[string]string{
+		"DIRENV_DIFF": diff,
+		"DIRENV_FILE": "/project/.envrc",
+	}
+	findings := []report.Finding{
+		{Name: "MY_VAR", Origin: report.Startup},
+	}
+	launchctlCalls := 0
+	elevateOrigins(findings, snap, func(name string) string {
+		launchctlCalls++
+		return ""
+	})
+	if findings[0].Origin != report.Startup {
+		t.Errorf("Startup variable must not be elevated; got Origin=%v", findings[0].Origin)
+	}
+	if findings[0].ToolSource != nil {
+		t.Error("Startup variable must not have ToolSource set")
+	}
+	if launchctlCalls != 0 {
+		t.Errorf("launchctlProbe must not be called for Startup variables; called %d time(s)", launchctlCalls)
+	}
+}
+
+// TestElevateOriginsDirenvHit verifies that an Inherited variable present in
+// DIRENV_DIFF n is elevated to Toolset with correct ToolSource fields.
+func TestElevateOriginsDirenvHit(t *testing.T) {
+	diff := makeDiffForMain(t, map[string]string{"MY_VAR": "hello"})
+	snap := map[string]string{
+		"DIRENV_DIFF": diff,
+		"DIRENV_FILE": "/project/.envrc",
+	}
+	findings := []report.Finding{
+		{Name: "MY_VAR", Origin: report.Inherited},
+	}
+	launchctlCalls := 0
+	elevateOrigins(findings, snap, func(name string) string {
+		launchctlCalls++
+		return "from-launchctl"
+	})
+	if findings[0].Origin != report.Toolset {
+		t.Errorf("direnv-hit Inherited variable must be elevated to Toolset; got %v", findings[0].Origin)
+	}
+	if findings[0].ToolSource == nil {
+		t.Fatal("ToolSource must be set for a Toolset finding")
+	}
+	if findings[0].ToolSource.Tool != "direnv" {
+		t.Errorf("ToolSource.Tool: got %q, want %q", findings[0].ToolSource.Tool, "direnv")
+	}
+	// direnv hit must skip the launchctl probe entirely.
+	if launchctlCalls != 0 {
+		t.Errorf("launchctlProbe must NOT be called when direnv probe hits; called %d time(s)", launchctlCalls)
+	}
+}
+
+// TestElevateOriginsDirenvMissLaunchctlCalled verifies that when the direnv
+// probe does not match, the launchctlProbe is called and its result stored in
+// InheritedSource.
+func TestElevateOriginsDirenvMissLaunchctlCalled(t *testing.T) {
+	// DIRENV_DIFF contains a different variable, so MY_VAR is a miss.
+	diff := makeDiffForMain(t, map[string]string{"OTHER": "val"})
+	snap := map[string]string{
+		"DIRENV_DIFF": diff,
+		"DIRENV_FILE": "/project/.envrc",
+	}
+	findings := []report.Finding{
+		{Name: "MY_VAR", Origin: report.Inherited},
+	}
+	launchctlCalls := 0
+	elevateOrigins(findings, snap, func(name string) string {
+		launchctlCalls++
+		return "from-launchctl"
+	})
+	if findings[0].Origin != report.Inherited {
+		t.Errorf("direnv-miss variable must stay Inherited; got %v", findings[0].Origin)
+	}
+	if launchctlCalls != 1 {
+		t.Errorf("launchctlProbe must be called exactly once on direnv miss; called %d time(s)", launchctlCalls)
+	}
+	if findings[0].InheritedSource != "from-launchctl" {
+		t.Errorf("InheritedSource: got %q, want %q", findings[0].InheritedSource, "from-launchctl")
 	}
 }
 

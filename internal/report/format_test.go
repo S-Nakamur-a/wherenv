@@ -285,7 +285,7 @@ func TestPrintTextValueVerbosity(t *testing.T) {
 	if !strings.Contains(gotShow, "…") {
 		t.Errorf("show-value should truncate long values with '…'; got %q", gotShow)
 	}
-	for _, line := range strings.Split(gotShow, "\n") {
+	for line := range strings.SplitSeq(gotShow, "\n") {
 		trimmed := strings.TrimLeft(line, " ")
 		if strings.HasPrefix(trimmed, "export FOO=") {
 			if runes := []rune(trimmed); len(runes) > maxRawCodeDefault+1 { // +1 for the "…"
@@ -318,6 +318,138 @@ func TestPrintTextMultipleFindings(t *testing.T) {
 	got := renderText(t, findings, Options{})
 	if !strings.Contains(got, "\n\n") {
 		t.Errorf("expected blank line separator between findings; got %q", got)
+	}
+}
+
+// ── Step 4: Toolset text output tests ────────────────────────────────────────
+
+func TestPrintTextToolsetWithFile(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/home/user/project/.envrc",
+				Value: "hello",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{})
+	if !strings.Contains(got, "MY_VAR: set by direnv") {
+		t.Errorf("expected 'set by direnv' header; got %q", got)
+	}
+	if !strings.Contains(got, "/home/user/project/.envrc") {
+		t.Errorf("expected .envrc path; got %q", got)
+	}
+	if !strings.Contains(got, "directory-scoped") {
+		t.Errorf("expected directory-scoped note; got %q", got)
+	}
+	// Value must be hidden by default.
+	if strings.Contains(got, "hello") {
+		t.Errorf("default output must not reveal the value; got %q", got)
+	}
+}
+
+func TestPrintTextToolsetNoFile(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "",
+				Value: "hello",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{})
+	if !strings.Contains(got, "DIRENV_FILE not set") {
+		t.Errorf("expected DIRENV_FILE-not-set notice; got %q", got)
+	}
+}
+
+func TestPrintTextToolsetShowValue(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project/.envrc",
+				Value: "secret",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{ShowValue: true})
+	if !strings.Contains(got, "secret") {
+		t.Errorf("show-value should reveal the value; got %q", got)
+	}
+}
+
+// TestPrintTextToolsetHeaderUsesTool verifies that the header line uses
+// ToolSource.Tool, not a hardcoded string. This fixes the design invariant for
+// future tools like mise: a Toolset finding with Tool="mise" must print
+// "set by mise", not "set by direnv".
+func TestPrintTextToolsetHeaderUsesTool(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MISE_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "mise",
+				File:  "/project/mise.toml",
+				Value: "val",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{})
+	if !strings.Contains(got, "set by mise") {
+		t.Errorf("header must use ToolSource.Tool; got %q", got)
+	}
+	if strings.Contains(got, "set by direnv") {
+		t.Errorf("header must not say 'set by direnv' for a non-direnv tool; got %q", got)
+	}
+}
+
+// TestPrintTextToolsetValueControlChars verifies that S7 sanitize is applied
+// to the tool value in text output (control characters become '?').
+func TestPrintTextToolsetValueControlChars(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project/.envrc",
+				Value: "hello\x1b[31mworld",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{ShowValue: true})
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("control characters must be sanitized in text output; got %q", got)
+	}
+}
+
+// TestPrintTextToolsetEmptyValueNotShown verifies that when ToolSource.Value is
+// empty, no value line is emitted even with ShowValue=true.
+func TestPrintTextToolsetEmptyValueNotShown(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project/.envrc",
+				Value: "",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{ShowValue: true})
+	// The "→  " value prefix must not appear when Value is empty.
+	if strings.Contains(got, "→  ") {
+		t.Errorf("empty Value must not produce a value line; got %q", got)
 	}
 }
 
@@ -441,6 +573,71 @@ func TestPrintJSONSentinelMissing(t *testing.T) {
 	got := renderJSON(t, findings, Options{})
 	if !strings.Contains(got, `"sentinel_missing": true`) {
 		t.Errorf("expected sentinel_missing in JSON; got:\n%s", got)
+	}
+}
+
+// ── Step 5: Toolset JSON output tests ────────────────────────────────────────
+
+func TestPrintJSONToolsetDefaultHidesValue(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project/.envrc",
+				Value: "secret",
+			},
+		},
+	}
+	got := renderJSON(t, findings, Options{})
+	if !strings.Contains(got, `"origin": "toolset"`) {
+		t.Errorf("expected origin=toolset in JSON; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"tool": "direnv"`) {
+		t.Errorf("expected tool=direnv in JSON; got:\n%s", got)
+	}
+	if strings.Contains(got, "secret") {
+		t.Errorf("default JSON must not reveal the value; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"value": "<hidden>"`) {
+		t.Errorf("expected value=<hidden> in default JSON; got:\n%s", got)
+	}
+}
+
+func TestPrintJSONToolsetShowValue(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project/.envrc",
+				Value: "secret",
+			},
+		},
+	}
+	got := renderJSON(t, findings, Options{ShowValue: true})
+	if !strings.Contains(got, `"value": "secret"`) {
+		t.Errorf("show-value JSON should reveal value; got:\n%s", got)
+	}
+}
+
+func TestPrintJSONToolsetFileAlwaysSanitized(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "direnv",
+				File:  "/project\x1b[31m/.envrc",
+				Value: "v",
+			},
+		},
+	}
+	got := renderJSON(t, findings, Options{})
+	if strings.Contains(got, "\x1b") {
+		t.Errorf("file path must be sanitized in JSON output; got:\n%s", got)
 	}
 }
 
