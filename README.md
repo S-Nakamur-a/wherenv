@@ -214,7 +214,7 @@ classify variables from the current environment only (inherited / not set).
 ### Default: tab-separated records (TSV)
 
 The default format is one record per line, with **no header row** (so every line
-is data) and exactly seven tab-separated columns:
+is data) and exactly nine tab-separated columns:
 
 | # | Column | Notes |
 |---|--------|-------|
@@ -225,6 +225,11 @@ is data) and exactly seven tab-separated columns:
 | 5 | `line_confidence` | `exact`, `best-effort`, or `unknown` (empty when not applicable) |
 | 6 | `modes` | e.g. `login`, `non-login`, `non-login+login` (empty when not applicable) |
 | 7 | `attrs` | comma-separated tokens (empty when none) |
+| 8 | `caller_file` | when the assignment ran inside a helper function, the file that called it (the line you edit); empty for a direct assignment. Columns 3/4 stay the precise mechanism. |
+| 9 | `caller_line` | 1-based line in `caller_file` (empty when not applicable) |
+
+`caller_file`/`caller_line` are their own columns (not an `attrs` token) because a
+file path may contain a comma, which would break `attrs` parsing.
 
 A `startup` variable emits **one line per assignment site** (so you can `grep` by
 file or `cut` the line number); every other origin emits one line. The `attrs`
@@ -266,6 +271,33 @@ still contribute. Open the listed `file:line`s to see how the value was built up
 With `--mode both`, each assignment is also tagged with the mode it ran in
 (`[login]`, `[non-login]`, or `[non-login+login]`), since which files run depends
 on whether your session is a login shell.
+
+### A variable set through a helper function
+
+When a variable is exported by a generic helper (for example an `envsource`-style
+loader that reads a `.env` file and runs `export "$key=$value"`), the bare
+`file:line` of the `export` points at the helper, not at the file you would edit.
+`wherenv` surfaces the **call site** as the primary location and keeps the helper
+as a `(via …)` note:
+
+```
+AWS_PROFILE: set by startup
+  ~/.config/zsh/conf.d/08-profile.zsh:7  (via ~/.config/zsh/functions/envsource:16)
+```
+
+Here line 7 of `08-profile.zsh` is the `envsource …` call you control; the helper
+that physically ran the `export` is shown in parentheses. In the default TSV the
+same fact is the `caller_file`/`caller_line` columns (8/9), with `file`/`line`
+(3/4) still the helper:
+
+```
+AWS_PROFILE	startup	~/.config/zsh/functions/envsource	16	exact	login	winner=login	~/.config/zsh/conf.d/08-profile.zsh	7
+```
+
+(zsh only — it relies on `funcfiletrace`, captured by briefly enabling
+`prompt_subst` during the trace. The `.env` data file itself is read as data,
+never executed, so it cannot be traced; the call site is the closest provable
+location.)
 
 ### Output streams
 

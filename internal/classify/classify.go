@@ -67,6 +67,8 @@ func classifyOne(name string, results []tracer.TraceResult, envSnap map[string]s
 					Append:       ev.Append,
 					Modes:        []tracer.Mode{r.Mode},
 					ShellVersion: r.ShellVersion,
+					CallerFile:   ev.CallerFile,
+					CallerLine:   ev.CallerLine,
 				}
 				siteMap[sk] = site
 				siteOrder = append(siteOrder, sk)

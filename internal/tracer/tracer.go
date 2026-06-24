@@ -40,6 +40,18 @@ type AssignEvent struct {
 	LineConf LineConfidence
 	Append   bool // true when "+=" was used
 	Order    int  // 0-based position among events for this shell+mode run
+
+	// CallerFile/CallerLine record where the enclosing function was *called*
+	// from, when the assignment executed inside a function whose body lives in a
+	// different file than the call site (e.g. an `envsource`-style loader defined
+	// in ~/.config/zsh/functions but invoked from a conf.d file). For such
+	// assignments File/Line point at the generic helper (the mechanism) while
+	// CallerFile/CallerLine point at the line the user actually edits to change
+	// the value. CallerFile is empty when the assignment ran directly in a
+	// startup file (no indirection) or when the shell could not supply a caller
+	// (zsh only; bash leaves these zero).
+	CallerFile string
+	CallerLine int
 }
 
 // TraceResult holds all events from one shell spawn (one shell, one mode).

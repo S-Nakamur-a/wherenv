@@ -143,6 +143,46 @@ func TestPrintTextStartupSimple(t *testing.T) {
 	}
 }
 
+func TestPrintTextStartupVia(t *testing.T) {
+	// An assignment performed inside a helper function (envsource) carries a
+	// caller location; the caller becomes primary and the helper is the via note.
+	site := AssignmentSite{
+		File: "/home/u/.config/zsh/functions/envsource", Line: 16,
+		LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.Login},
+		CallerFile: "/home/u/.config/zsh/conf.d/08-profile.zsh", CallerLine: 7,
+	}
+	findings := []Finding{
+		makeStartupFinding("AWS_PROFILE",
+			[]AssignmentSite{site},
+			map[tracer.Mode]*AssignmentSite{tracer.Login: &site},
+			false, false),
+	}
+	got := renderText(t, findings, Options{})
+	want := "AWS_PROFILE: set by startup\n" +
+		"  /home/u/.config/zsh/conf.d/08-profile.zsh:7  (via /home/u/.config/zsh/functions/envsource:16)\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintJSONStartupVia(t *testing.T) {
+	site := AssignmentSite{
+		File: "/home/u/functions/envsource", Line: 16,
+		LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.Login},
+		CallerFile: "/home/u/conf.d/08.zsh", CallerLine: 7,
+	}
+	findings := []Finding{
+		makeStartupFinding("AWS_PROFILE", []AssignmentSite{site}, nil, false, false),
+	}
+	got := renderJSON(t, findings, Options{})
+	if !strings.Contains(got, `"caller_file": "/home/u/conf.d/08.zsh"`) {
+		t.Errorf("expected caller_file in JSON; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"caller_line": 7`) {
+		t.Errorf("expected caller_line in JSON; got:\n%s", got)
+	}
+}
+
 func TestPrintTextStartupStack(t *testing.T) {
 	// Facts only: assignments listed most-recent-first; the last-executed one is
 	// marked "← ran last". No override/cumulative claims, no values.
@@ -409,7 +449,7 @@ func TestPrintTextToolsetMiseNoFile(t *testing.T) {
 func TestPrintTSVUnset(t *testing.T) {
 	findings := []Finding{{Name: "NOTEXIST", Origin: Unset}}
 	got := renderTSV(t, findings)
-	want := "NOTEXIST\tunset\t\t\t\t\t\n"
+	want := "NOTEXIST\tunset\t\t\t\t\t\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -418,7 +458,7 @@ func TestPrintTSVUnset(t *testing.T) {
 func TestPrintTSVInheritedNoSource(t *testing.T) {
 	findings := []Finding{{Name: "SHLVL", Origin: Inherited}}
 	got := renderTSV(t, findings)
-	want := "SHLVL\tinherited\t\t\t\t\t\n"
+	want := "SHLVL\tinherited\t\t\t\t\t\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -427,7 +467,7 @@ func TestPrintTSVInheritedNoSource(t *testing.T) {
 func TestPrintTSVInheritedLaunchd(t *testing.T) {
 	findings := []Finding{{Name: "TERM", Origin: Inherited, InheritedFromLaunchd: true}}
 	got := renderTSV(t, findings)
-	want := "TERM\tinherited\t\t\t\t\tlaunchd\n"
+	want := "TERM\tinherited\t\t\t\t\tlaunchd\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -436,7 +476,7 @@ func TestPrintTSVInheritedLaunchd(t *testing.T) {
 func TestPrintTSVInheritedSentinelMissing(t *testing.T) {
 	findings := []Finding{{Name: "FOO", Origin: Inherited, SentinelMissing: true}}
 	got := renderTSV(t, findings)
-	want := "FOO\tinherited\t\t\t\t\tincomplete\n"
+	want := "FOO\tinherited\t\t\t\t\tincomplete\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -451,7 +491,7 @@ func TestPrintTSVStartupSingleSiteWinner(t *testing.T) {
 			false, false),
 	}
 	got := renderTSV(t, findings)
-	want := "FOO\tstartup\t/etc/zshrc\t5\texact\tnon-login\twinner=non-login\n"
+	want := "FOO\tstartup\t/etc/zshrc\t5\texact\tnon-login\twinner=non-login\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -472,9 +512,9 @@ func TestPrintTSVStartupMultiSite(t *testing.T) {
 			false, false),
 	}
 	got := renderTSV(t, findings)
-	want := "PATH\tstartup\t/a.zsh\t3\texact\tlogin\t\n" +
-		"PATH\tstartup\t/b.zsh\t88\texact\tlogin\t\n" +
-		"PATH\tstartup\t/c.zsh\t21\texact\tlogin\twinner=login\n"
+	want := "PATH\tstartup\t/a.zsh\t3\texact\tlogin\t\t\t\n" +
+		"PATH\tstartup\t/b.zsh\t88\texact\tlogin\t\t\t\n" +
+		"PATH\tstartup\t/c.zsh\t21\texact\tlogin\twinner=login\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -490,7 +530,7 @@ func TestPrintTSVStartupAppendAndModes(t *testing.T) {
 			true, false),
 	}
 	got := renderTSV(t, findings)
-	want := "PATH\tstartup\t/home/u/.zshrc\t10\texact\tnon-login+login\twinner=non-login,append\n"
+	want := "PATH\tstartup\t/home/u/.zshrc\t10\texact\tnon-login+login\twinner=non-login,append\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -501,7 +541,26 @@ func TestPrintTSVToolset(t *testing.T) {
 		{Name: "MY_VAR", Origin: Toolset, ToolSource: &ToolSource{Tool: "direnv", File: "/proj/.envrc"}},
 	}
 	got := renderTSV(t, findings)
-	want := "MY_VAR\ttoolset\t/proj/.envrc\t\t\t\ttool=direnv\n"
+	want := "MY_VAR\ttoolset\t/proj/.envrc\t\t\t\ttool=direnv\t\t\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestPrintTSVStartupVia checks the caller columns (8/9) carry the call site for
+// a helper-mediated assignment, while file/line (3/4) stay the mechanism.
+func TestPrintTSVStartupVia(t *testing.T) {
+	site := AssignmentSite{
+		File: "/home/u/functions/envsource", Line: 16, LineConf: tracer.LineExact,
+		Modes:      []tracer.Mode{tracer.Login},
+		CallerFile: "/home/u/conf.d/08.zsh", CallerLine: 7,
+	}
+	findings := []Finding{
+		makeStartupFinding("AWS_PROFILE", []AssignmentSite{site},
+			map[tracer.Mode]*AssignmentSite{tracer.Login: &site}, false, false),
+	}
+	got := renderTSV(t, findings)
+	want := "AWS_PROFILE\tstartup\t/home/u/functions/envsource\t16\texact\tlogin\twinner=login\t/home/u/conf.d/08.zsh\t7\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -514,13 +573,13 @@ func TestPrintTSVFieldsAreTabSafe(t *testing.T) {
 		{Name: "MY_VAR", Origin: Toolset, ToolSource: &ToolSource{Tool: "direnv", File: "/proj\tevil/.envrc"}},
 	}
 	got := renderTSV(t, findings)
-	want := "MY_VAR\ttoolset\t/proj evil/.envrc\t\t\t\ttool=direnv\n"
+	want := "MY_VAR\ttoolset\t/proj evil/.envrc\t\t\t\ttool=direnv\t\t\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
-	// Exactly 6 tabs → 7 columns, regardless of the path content.
-	if n := strings.Count(strings.TrimRight(got, "\n"), "\t"); n != 6 {
-		t.Errorf("expected 6 tab separators (7 columns), got %d in %q", n, got)
+	// Exactly 8 tabs → 9 columns, regardless of the path content.
+	if n := strings.Count(strings.TrimRight(got, "\n"), "\t"); n != 8 {
+		t.Errorf("expected 8 tab separators (9 columns), got %d in %q", n, got)
 	}
 }
 
