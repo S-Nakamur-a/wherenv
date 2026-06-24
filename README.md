@@ -37,7 +37,7 @@ It works with **zsh** and **bash**, follows `source`d files, and tells you when
 a variable was inherited from your terminal/login session rather than set by any
 dotfile.
 
-**`wherenv` never reads, prints, stores, or logs your variables' values.** It is
+**`wherenv` never surfaces, stores, or logs your variables' values.** It is
 built to answer *where*, not *what* — so you can run `wherenv AWS_SECRET_ACCESS_KEY`
 and the only thing it can possibly show you is a `file:line`. See
 [Secrets & memory](#secrets--memory) for exactly what this guarantee covers.
