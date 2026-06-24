@@ -22,6 +22,10 @@ const zlibDecompressLimit = 10 * 1024 * 1024 // 10 MiB
 // direnvDiff is the decoded JSON structure of the DIRENV_DIFF value.
 // Only the "n" (next) field is needed: variables present in n were added or
 // changed by direnv when it loaded the current .envrc.
+//
+// The map values (the variable values direnv recorded) are decoded because
+// they are part of the DIRENV_DIFF JSON, but Probe only inspects key presence
+// and never copies a value out — see Probe.
 type direnvDiff struct {
 	N map[string]string `json:"n"`
 }
@@ -55,15 +59,15 @@ func Probe(snap map[string]string, name string) (report.ToolSource, bool) {
 		return report.ToolSource{}, false
 	}
 
-	val, found := diff.N[name]
-	if !found {
+	// Presence-only check: we confirm direnv set this name but never read its
+	// value out of the diff (the value is dropped with the rest of diff.N).
+	if _, found := diff.N[name]; !found {
 		return report.ToolSource{}, false
 	}
 
 	return report.ToolSource{
-		Tool:  "direnv",
-		File:  snap["DIRENV_FILE"],
-		Value: val,
+		Tool: "direnv",
+		File: snap["DIRENV_FILE"],
 	}, true
 }
 

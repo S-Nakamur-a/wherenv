@@ -161,9 +161,9 @@ func TestElevateOriginsStartupNotTouched(t *testing.T) {
 		{Name: "MY_VAR", Origin: report.Startup},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) string {
+	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) bool {
 		launchctlCalls++
-		return ""
+		return false
 	})
 	if findings[0].Origin != report.Startup {
 		t.Errorf("Startup variable must not be elevated; got Origin=%v", findings[0].Origin)
@@ -188,9 +188,9 @@ func TestElevateOriginsDirenvHit(t *testing.T) {
 		{Name: "MY_VAR", Origin: report.Inherited},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) string {
+	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) bool {
 		launchctlCalls++
-		return "from-launchctl"
+		return true
 	})
 	if findings[0].Origin != report.Toolset {
 		t.Errorf("direnv-hit Inherited variable must be elevated to Toolset; got %v", findings[0].Origin)
@@ -208,8 +208,8 @@ func TestElevateOriginsDirenvHit(t *testing.T) {
 }
 
 // TestElevateOriginsDirenvMissLaunchctlCalled verifies that when the direnv
-// probe does not match, the launchctlProbe is called and its result stored in
-// InheritedSource.
+// probe does not match, the launchctlProbe is called and its presence result
+// recorded in InheritedFromLaunchd.
 func TestElevateOriginsDirenvMissLaunchctlCalled(t *testing.T) {
 	// DIRENV_DIFF contains a different variable, so MY_VAR is a miss.
 	diff := makeDiffForMain(t, map[string]string{"OTHER": "val"})
@@ -221,9 +221,9 @@ func TestElevateOriginsDirenvMissLaunchctlCalled(t *testing.T) {
 		{Name: "MY_VAR", Origin: report.Inherited},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) string {
+	elevateOrigins(findings, snap, map[string]report.ToolSource{}, func(name string) bool {
 		launchctlCalls++
-		return "from-launchctl"
+		return true
 	})
 	if findings[0].Origin != report.Inherited {
 		t.Errorf("direnv-miss variable must stay Inherited; got %v", findings[0].Origin)
@@ -231,8 +231,8 @@ func TestElevateOriginsDirenvMissLaunchctlCalled(t *testing.T) {
 	if launchctlCalls != 1 {
 		t.Errorf("launchctlProbe must be called exactly once on direnv miss; called %d time(s)", launchctlCalls)
 	}
-	if findings[0].InheritedSource != "from-launchctl" {
-		t.Errorf("InheritedSource: got %q, want %q", findings[0].InheritedSource, "from-launchctl")
+	if !findings[0].InheritedFromLaunchd {
+		t.Error("InheritedFromLaunchd must be true when launchctl probe reports presence")
 	}
 }
 
@@ -244,15 +244,15 @@ func TestElevateOriginsDirenvMissLaunchctlCalled(t *testing.T) {
 func TestElevateOriginsMiseHit(t *testing.T) {
 	snap := map[string]string{} // no DIRENV_DIFF, so direnv probe always misses
 	miseSources := map[string]report.ToolSource{
-		"MY_MISE_VAR": {Tool: "mise", File: "/project/mise.toml", Value: "hello"},
+		"MY_MISE_VAR": {Tool: "mise", File: "/project/mise.toml"},
 	}
 	findings := []report.Finding{
 		{Name: "MY_MISE_VAR", Origin: report.Inherited},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, miseSources, func(name string) string {
+	elevateOrigins(findings, snap, miseSources, func(name string) bool {
 		launchctlCalls++
-		return ""
+		return false
 	})
 	if findings[0].Origin != report.Toolset {
 		t.Errorf("mise-hit variable must be elevated to Toolset; got %v", findings[0].Origin)
@@ -283,15 +283,15 @@ func TestElevateOriginsDirenvPriority(t *testing.T) {
 	}
 	// Same variable is also in miseSources — direnv must win.
 	miseSources := map[string]report.ToolSource{
-		"MY_VAR": {Tool: "mise", File: "/project/mise.toml", Value: "mise-val"},
+		"MY_VAR": {Tool: "mise", File: "/project/mise.toml"},
 	}
 	findings := []report.Finding{
 		{Name: "MY_VAR", Origin: report.Inherited},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, miseSources, func(name string) string {
+	elevateOrigins(findings, snap, miseSources, func(name string) bool {
 		launchctlCalls++
-		return ""
+		return false
 	})
 	if findings[0].Origin != report.Toolset {
 		t.Errorf("direnv-priority variable must be Toolset; got %v", findings[0].Origin)
@@ -312,15 +312,15 @@ func TestElevateOriginsDirenvPriority(t *testing.T) {
 func TestElevateOriginsMiseMissLaunchctlCalled(t *testing.T) {
 	snap := map[string]string{} // no DIRENV_DIFF
 	miseSources := map[string]report.ToolSource{
-		"OTHER_VAR": {Tool: "mise", File: "/project/mise.toml", Value: "v"},
+		"OTHER_VAR": {Tool: "mise", File: "/project/mise.toml"},
 	}
 	findings := []report.Finding{
 		{Name: "MY_VAR", Origin: report.Inherited},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, miseSources, func(name string) string {
+	elevateOrigins(findings, snap, miseSources, func(name string) bool {
 		launchctlCalls++
-		return "from-launchctl"
+		return true
 	})
 	if findings[0].Origin != report.Inherited {
 		t.Errorf("mise-miss variable must stay Inherited; got %v", findings[0].Origin)
@@ -328,8 +328,8 @@ func TestElevateOriginsMiseMissLaunchctlCalled(t *testing.T) {
 	if launchctlCalls != 1 {
 		t.Errorf("launchctlProbe must be called exactly once on mise miss; called %d time(s)", launchctlCalls)
 	}
-	if findings[0].InheritedSource != "from-launchctl" {
-		t.Errorf("InheritedSource: got %q, want %q", findings[0].InheritedSource, "from-launchctl")
+	if !findings[0].InheritedFromLaunchd {
+		t.Error("InheritedFromLaunchd must be true when launchctl probe reports presence")
 	}
 }
 
@@ -339,15 +339,15 @@ func TestElevateOriginsMiseMissLaunchctlCalled(t *testing.T) {
 func TestElevateOriginsStartupNotTouchedByMise(t *testing.T) {
 	snap := map[string]string{}
 	miseSources := map[string]report.ToolSource{
-		"MY_VAR": {Tool: "mise", File: "/project/mise.toml", Value: "v"},
+		"MY_VAR": {Tool: "mise", File: "/project/mise.toml"},
 	}
 	findings := []report.Finding{
 		{Name: "MY_VAR", Origin: report.Startup},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, miseSources, func(name string) string {
+	elevateOrigins(findings, snap, miseSources, func(name string) bool {
 		launchctlCalls++
-		return ""
+		return false
 	})
 	if findings[0].Origin != report.Startup {
 		t.Errorf("Startup variable must not be elevated by mise; got Origin=%v", findings[0].Origin)
@@ -366,15 +366,15 @@ func TestElevateOriginsStartupNotTouchedByMise(t *testing.T) {
 func TestElevateOriginsUnsetNotTouchedByMise(t *testing.T) {
 	snap := map[string]string{}
 	miseSources := map[string]report.ToolSource{
-		"MY_VAR": {Tool: "mise", File: "/project/mise.toml", Value: "v"},
+		"MY_VAR": {Tool: "mise", File: "/project/mise.toml"},
 	}
 	findings := []report.Finding{
 		{Name: "MY_VAR", Origin: report.Unset},
 	}
 	launchctlCalls := 0
-	elevateOrigins(findings, snap, miseSources, func(name string) string {
+	elevateOrigins(findings, snap, miseSources, func(name string) bool {
 		launchctlCalls++
-		return ""
+		return false
 	})
 	if findings[0].Origin != report.Unset {
 		t.Errorf("Unset variable must not be elevated by mise; got Origin=%v", findings[0].Origin)

@@ -8,7 +8,7 @@ LDFLAGS     := -s -w
 
 .DEFAULT_GOAL := build
 
-.PHONY: build install test clean vet fmt tidy lint all
+.PHONY: build install test integration clean vet fmt tidy lint all
 
 ## build: compile the binary into ./bin
 build:
@@ -22,6 +22,10 @@ install:
 ## test: run all tests with the race detector
 test:
 	go test -race -count=1 ./...
+
+## integration: end-to-end test against real direnv + mise (skips if missing)
+integration:
+	bash test/integration.sh
 
 ## vet: run go vet
 vet:

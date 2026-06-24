@@ -64,7 +64,6 @@ func classifyOne(name string, results []tracer.TraceResult, envSnap map[string]s
 					File:         ev.File,
 					Line:         ev.Line,
 					LineConf:     ev.LineConf,
-					RawCode:      ev.RawCode,
 					Append:       ev.Append,
 					Modes:        []tracer.Mode{r.Mode},
 					ShellVersion: r.ShellVersion,

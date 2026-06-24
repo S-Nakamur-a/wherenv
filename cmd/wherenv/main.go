@@ -32,16 +32,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// ── Flags ──────────────────────────────────────────────────────────────────
 	fs := flag.NewFlagSet("wherenv", flag.ContinueOnError)
 	fs.SetOutput(stderr)
-	showValue := fs.Bool("show-value", false, "reveal variable values (truncated at 120 chars); hidden by default")
-	fullValue := fs.Bool("full-value", false, "reveal full, untruncated variable values")
 	asJSON := fs.Bool("json", false, "emit JSON output")
 	timeoutSec := fs.Float64("timeout", 8.0, "per-spawn timeout in seconds")
 	modeFlag := fs.String("mode", "login", "shell mode(s) to trace: login | non-login | both")
 	colorFlag := fs.String("color", "auto", "colorize output: auto | always | never")
-	fs.BoolVar(showValue, "v", false, "shorthand for --show-value")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: wherenv [flags] VARNAME [VARNAME...]")
-		fmt.Fprintln(stderr, "Values are hidden by default; pass -v to reveal them.")
+		fmt.Fprintln(stderr, "wherenv reports WHERE each variable was set; it never reads or prints values.")
 		fmt.Fprintln(stderr, "WARNING: wherenv executes your real shell startup files as a side effect of tracing.")
 		fs.PrintDefaults()
 	}
@@ -173,8 +170,6 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// ── Report ────────────────────────────────────────────────────────────────
 	opts := report.Options{
 		JSON:      *asJSON,
-		ShowValue: *showValue || *fullValue,
-		FullValue: *fullValue,
 		Color:     colorize,
 		ShowModes: len(modes) > 1,
 	}
@@ -182,28 +177,21 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		fmt.Fprintln(stderr, "wherenv:", err)
 		return 1
 	}
-
-	// Hint how to reveal values — only interactively (TTY), only when values were
-	// actually hidden, and not in JSON mode. Keeps pipes/scripts clean.
-	if !opts.ShowValue && !opts.FullValue && !opts.JSON &&
-		isTerminalWriter(stdout) &&
-		(report.AnyStartupValue(findings) || report.AnyToolsetValue(findings)) {
-		fmt.Fprintln(stderr, "(values hidden; pass -v to show, --full-value for untruncated)")
-	}
 	return 0
 }
 
 // elevateOrigins iterates over findings and, for each Inherited variable,
 // checks in order: (1) direnv probe — if it matches, the finding is promoted
 // to Toolset; (2) mise probe via miseSources map — if a match is found, also
-// elevated to Toolset; (3) launchctl probe via launchctlProbe — fills
-// InheritedSource for macOS session-level variables. Only Inherited findings
-// are touched; Startup/Unset/Toolset pass through unchanged.
+// elevated to Toolset; (3) launchctl probe via launchctlProbe — sets
+// InheritedFromLaunchd for macOS session-level variables. Only Inherited
+// findings are touched; Startup/Unset/Toolset pass through unchanged.
 //
 // miseSources is the pre-built map from mise.Probe (called once outside this
 // function to avoid per-variable exec calls). launchctlProbe is injected so
-// callers in tests can supply a stub without spawning exec.Command (S5).
-func elevateOrigins(findings []report.Finding, snap map[string]string, miseSources map[string]report.ToolSource, launchctlProbe func(string) string) {
+// callers in tests can supply a stub without spawning exec.Command (S5); it
+// returns only a presence bit, never the variable's value.
+func elevateOrigins(findings []report.Finding, snap map[string]string, miseSources map[string]report.ToolSource, launchctlProbe func(string) bool) {
 	for i := range findings {
 		if findings[i].Origin != report.Inherited {
 			continue
@@ -221,7 +209,7 @@ func elevateOrigins(findings []report.Finding, snap map[string]string, miseSourc
 			continue
 		}
 		// 3. launchctl: macOS session-level env store (S5: no shell interpolation).
-		findings[i].InheritedSource = launchctlProbe(findings[i].Name)
+		findings[i].InheritedFromLaunchd = launchctlProbe(findings[i].Name)
 	}
 }
 

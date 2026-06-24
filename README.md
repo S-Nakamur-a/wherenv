@@ -7,30 +7,28 @@ is `nano` and you have no idea which dotfile is to blame. `wherenv` answers the
 question by tracing what your shell *actually does* at startup:
 
 ```console
-$ wherenv -v PATH
+$ wherenv PATH
 PATH: set by startup  (3 places, most recent first)
 
   → /Users/you/.config/zsh/conf.d/07-tools.zsh:39   ← ran last
-      export PATH=/Users/you/.nodenv/shims:/opt/homebrew/bin:…
     /Users/you/.orbstack/shell/init.zsh:1
-      export PATH=/usr/local/bin:…
     /etc/zprofile:12
-      PATH=/usr/local/bin:…
 ```
 
 Assignments are listed like a stack trace — most recent on top, with the line
 that **ran last** marked. `wherenv` reports *where* and *in what order*, which it
 knows for certain; it doesn't guess which assignment "wins" (with `path=($path …)`
-arrays and `$VAR`-expansion that can't be decided from the trace alone). Use
-`-v` to see the values and judge precedence yourself.
+arrays and `$VAR`-expansion that can't be decided from the trace alone). To see
+what a line actually assigns, open that file at that line yourself.
 
 It works with **zsh** and **bash**, follows `source`d files, and tells you when
 a variable was inherited from your terminal/login session rather than set by any
 dotfile.
 
-**Values are hidden by default** — so you can run `wherenv AWS_SECRET_ACCESS_KEY`
-without spilling a secret onto your screen. The locations (file:line) are always
-shown; pass `-v` to reveal the values, as above.
+**`wherenv` never reads, prints, stores, or logs your variables' values.** It is
+built to answer *where*, not *what* — so you can run `wherenv AWS_SECRET_ACCESS_KEY`
+and the only thing it can possibly show you is a `file:line`. See
+[Secrets & memory](#secrets--memory) for exactly what this guarantee covers.
 
 > Unlike grepping your dotfiles, `wherenv` runs your real startup in a traced
 > subshell, so it sees through conditionals, loops, `eval`, and sourced files —
@@ -70,23 +68,25 @@ wherenv [flags] VARNAME [VARNAME...]
 ```
 
 ```sh
-wherenv PATH                  # where is PATH built up? (values hidden)
-wherenv -v PATH               # ...and show the values
+wherenv PATH                  # where is PATH built up?
 wherenv PATH GOPATH EDITOR    # several at once
 wherenv --json PATH           # machine-readable output
-wherenv --full-value PATH     # show full, untruncated values
+wherenv --mode both PATH      # show how login and non-login differ
 ```
 
 ### Flags
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `-v`, `--show-value` | off | Reveal variable values (truncated at 120 chars). Hidden by default so secrets aren't printed. |
-| `--full-value` | off | Reveal full, untruncated values (implies `-v`). |
 | `--mode` | `login` | Shell mode(s) to trace: `login`, `non-login`, or `both`. |
 | `--color` | `auto` | Colorize output: `auto` (TTY only, respects `NO_COLOR`), `always`, `never`. |
 | `--json` | off | Emit JSON instead of human-readable text. |
 | `--timeout` | 8.0 | Per-spawn timeout in seconds (each traced mode gets this budget). |
+
+There is intentionally **no flag to show values** — `wherenv` does not have the
+value to show (see [Secrets & memory](#secrets--memory)). When a variable is
+overwritten several times and you want to see how the value was built up, open
+the listed `file:line`s yourself.
 
 **Why `--mode` defaults to `login`:** on zsh a login shell also sources the
 non-login files (`.zshrc`), so login is a superset and matches how macOS
@@ -95,12 +95,6 @@ login and non-login differ (each assignment is then tagged with the mode it ran
 in). On **bash**, login does *not* read `.bashrc` unless your `.bash_profile`
 sources it — use `--mode both` or `--mode non-login` if your settings live in
 `.bashrc`.
-
-Values are **hidden by default**: assignments display as `export FOO=<hidden>`
-and only the location is shown. This makes it safe to inspect secret-bearing
-variables. Use `-v` when you need to see what each assignment actually set —
-handy when a variable is overwritten several times and you want the winning
-value.
 
 ### Exit codes
 
@@ -120,7 +114,10 @@ and is also what keeps your input from ever reaching a shell.
 `wherenv` spawns your shell (`$SHELL`) twice — once non-login, once login — with
 `set -x` (xtrace) enabled and a unique, random marker baked into `PS4` so it can
 recognize its own trace lines. It parses that trace to find where each requested
-variable was assigned, recording the file and line for every assignment.
+variable was assigned, recording the file and line for every assignment. The
+right-hand side of each assignment (the value) is used only long enough to
+recover the variable name and the `+=` vs `=` operator, then discarded — it is
+never stored.
 
 - **Source-following**: because the trace reports the *actual* file being
   executed, assignments inside `source`d scripts are attributed to that script,
@@ -130,21 +127,46 @@ variable was assigned, recording the file and line for every assignment.
   than blended together.
 - **Tool-set variables**: after tracing startup files, `wherenv` probes
   developer tools that set environment variables through hooks rather than
-  startup files. Currently supported:
+  startup files. Each probe inspects only enough metadata to confirm *which file*
+  set the variable; the value recorded by the tool is never copied out.
+  Currently supported:
   - **direnv** — the `DIRENV_DIFF` variable is decoded to identify which
     variables were loaded from the current `.envrc`, and their source file is
     reported.
-  - **mise** — `mise env --json-extended` is run once to get a JSON map of all
-    variables mise set via `[env]` in `mise.toml`, with the source file for
-    each. Variables mise manages for other reasons (PATH, shims) are excluded.
-    The probe degrades gracefully if mise is not installed or fails.
+  - **mise** — `mise env --json-extended` is run once to learn which variables
+    mise set via `[env]` in `mise.toml`, with the source file for each. Variables
+    mise manages for other reasons (PATH, shims) are excluded. The probe degrades
+    gracefully if mise is not installed or fails.
 - **Inherited variables**: if nothing in startup or a known tool assigns a
   variable but it exists in your environment, it was inherited from the parent
-  process (terminal, `launchd`, login session). On macOS, `launchctl getenv`
-  is probed to identify a system-level source.
+  process (terminal, `launchd`, login session). On macOS, `wherenv` checks
+  whether the variable is present in the `launchd` session — see below for how it
+  does this without reading the value.
 
 There's a deeper write-up of the mechanism and design trade-offs if you're
 curious about the internals — see the project's design notes.
+
+### Secrets & memory
+
+`wherenv`'s entire job is provenance (*where* a variable was set), and it is
+built so that values are not its business:
+
+- **Never retained.** No value is ever stored in `wherenv`'s data structures,
+  printed, written to disk, or logged (including under `WHERENV_DEBUG`). The
+  output is locations and tool/provenance only.
+- **`launchctl` without reading the value.** `launchctl getenv NAME` prints the
+  value and exits `0` whether or not the variable is set, so presence can only be
+  told from whether it printed anything. `wherenv` pipes `launchctl`'s output
+  straight into `wc -c` (through an OS pipe, no shell) and reads back only the
+  byte count — the value flows `launchctl → kernel pipe → wc` and never enters
+  `wherenv`'s address space.
+- **What can't be avoided.** Like *any* program, `wherenv` starts with your full
+  environment block already in memory (the OS hands every process its `envp`).
+  And the xtrace stream, `DIRENV_DIFF`, and mise's JSON inherently contain values
+  while they are being parsed. `wherenv` does not parse what it doesn't need and
+  drops these the instant it has the `file:line`, but it cannot pretend the bytes
+  never transit memory. The guarantee is **"not retained, not surfaced"** — not
+  "never touched."
 
 ### ⚠️ Side effects
 
@@ -169,25 +191,21 @@ classify variables from the current environment only (inherited / not set).
 
 ## Output
 
-### A variable set during startup (default — values hidden)
+### A variable set during startup
 
 ```
 PATH: set by startup  (3 places, most recent first)
 
   → /Users/you/.zshrc:12   ← ran last
-      PATH=<hidden>
     /opt/homebrew/etc/profile.d/x.sh:2
-      export PATH=<hidden>
     /etc/zprofile:12
-      PATH=<hidden>
 ```
 
 The assignments are listed like a stack trace — most recent on top, the
 last-executed one marked `← ran last`. This is purely about *order*, not
 precedence: `wherenv` won't claim which assignment "wins", because cumulative
 forms like `export PATH=$PATH:…` and `path=($path …)` mean earlier lines often
-still contribute. Values are hidden by default; add `-v` to reveal them and see
-how the value was built up.
+still contribute. Open the listed `file:line`s to see how the value was built up.
 
 With `--mode both`, each assignment is also tagged with the mode it ran in
 (`[login]`, `[non-login]`, or `[non-login+login]`), since which files run depends
@@ -196,9 +214,9 @@ on whether your session is a login shell.
 ### Output streams
 
 `wherenv` follows the usual convention: the **findings go to stdout**, while the
-spinner, warnings, the "values hidden" hint, and `WHERENV_DEBUG` logs go to
-**stderr**. So `wherenv FOO > out.txt` captures just the result, and
-`wherenv FOO 2>/dev/null` silences the progress noise.
+spinner, warnings, and `WHERENV_DEBUG` logs go to **stderr**. So
+`wherenv FOO > out.txt` captures just the result, and `wherenv FOO 2>/dev/null`
+silences the progress noise.
 
 ### A variable not set by any startup file
 
@@ -210,8 +228,8 @@ TERM_PROGRAM: present in the environment, not set by any startup file
 `wherenv` only claims what it can prove: the variable is in your environment but
 no traced startup file sets it. It doesn't assert "inherited from the parent",
 because the same observation also covers a value you `export`ed by hand or one a
-runtime hook set. When a macOS `launchctl` session value is found, that concrete
-source is shown instead.
+runtime hook set. When the variable is present in the macOS `launchd` session,
+`wherenv` says so (`→ set in the launchd session`) instead.
 
 ### An unset variable
 

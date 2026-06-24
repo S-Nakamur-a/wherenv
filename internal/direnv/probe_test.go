@@ -73,9 +73,6 @@ func TestProbe(t *testing.T) {
 		if src.File != "/home/user/project/.envrc" {
 			t.Errorf("File: got %q, want %q", src.File, "/home/user/project/.envrc")
 		}
-		if src.Value != "hello" {
-			t.Errorf("Value: got %q, want %q", src.Value, "hello")
-		}
 	})
 
 	// (b) DIRENV_ prefix key → false (internal keys excluded)
@@ -153,12 +150,9 @@ func TestProbe(t *testing.T) {
 			"DIRENV_DIFF": diff,
 			"DIRENV_FILE": "/home/user/.envrc",
 		}
-		src, ok := Probe(snap, "MY_VAR")
+		_, ok := Probe(snap, "MY_VAR")
 		if !ok {
 			t.Fatal("expected Probe to return true when DIRENV_DIFF uses RawURLEncoding (no padding)")
-		}
-		if src.Value != "world" {
-			t.Errorf("Value: got %q, want %q", src.Value, "world")
 		}
 	})
 
@@ -214,12 +208,9 @@ func TestProbe(t *testing.T) {
 			"DIRENV_DIFF": diff,
 			"DIRENV_FILE": "/some/.envrc",
 		}
-		src, ok := Probe(snap, "BIG_VAR")
+		_, ok := Probe(snap, "BIG_VAR")
 		if !ok {
 			t.Fatal("expected Probe to return true for a payload under the size limit")
-		}
-		if src.Value != value {
-			t.Errorf("Value length: got %d, want %d", len(src.Value), len(value))
 		}
 	})
 }

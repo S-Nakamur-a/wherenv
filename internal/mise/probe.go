@@ -81,9 +81,13 @@ func DefaultRunner() ([]byte, error) {
 // `mise env --json-extended`. Source is present only for variables that were
 // explicitly set in a mise config file (e.g. [env] in mise.toml); variables
 // like PATH that mise mutates but does not own have an empty Source.
+//
+// Security: the "value" field is deliberately NOT decoded. We only need the
+// source path for provenance; leaving Value out of the struct means the
+// variable values in mise's JSON are discarded during unmarshalling rather than
+// retained in wherenv.
 type miseEnvEntry struct {
 	Source string `json:"source"`
-	Value  string `json:"value"`
 }
 
 // Probe runs the provided Runner once and returns a map from variable name to
@@ -116,9 +120,8 @@ func Probe(run Runner) map[string]report.ToolSource {
 			continue
 		}
 		result[name] = report.ToolSource{
-			Tool:  "mise",
-			File:  entry.Source,
-			Value: entry.Value,
+			Tool: "mise",
+			File: entry.Source,
 		}
 	}
 	return result
