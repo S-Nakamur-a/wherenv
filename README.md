@@ -130,10 +130,14 @@ variable was assigned, recording the file and line for every assignment.
   than blended together.
 - **Tool-set variables**: after tracing startup files, `wherenv` probes
   developer tools that set environment variables through hooks rather than
-  startup files. Currently supported: **direnv** — the `DIRENV_DIFF` variable
-  is decoded to identify which variables were loaded from the current `.envrc`,
-  and their source file is reported. More tools (mise, etc.) may be added in
-  future versions.
+  startup files. Currently supported:
+  - **direnv** — the `DIRENV_DIFF` variable is decoded to identify which
+    variables were loaded from the current `.envrc`, and their source file is
+    reported.
+  - **mise** — `mise env --json-extended` is run once to get a JSON map of all
+    variables mise set via `[env]` in `mise.toml`, with the source file for
+    each. Variables mise manages for other reasons (PATH, shims) are excluded.
+    The probe degrades gracefully if mise is not installed or fails.
 - **Inherited variables**: if nothing in startup or a known tool assigns a
   variable but it exists in your environment, it was inherited from the parent
   process (terminal, `launchd`, login session). On macOS, `launchctl getenv`
@@ -229,8 +233,14 @@ MY_VAR: not set
   `set by direnv` rather than `inherited`. Note: this relies on `DIRENV_DIFF`
   being present in the environment; if direnv is not active in the current
   directory no direnv-specific output is shown.
-- **`mise` and other version managers are not traced** — they activate through
-  hooks outside the standard startup sequence.
+- **`mise`** — when mise is installed, `wherenv` runs `mise env --json-extended`
+  once to identify variables set via `[env]` in the nearest `mise.toml`. Those
+  variables appear as `set by mise` with the source file. Variables that mise
+  manages but did not explicitly set (PATH, shims) are not claimed. If mise is
+  not installed, not configured, or exits non-zero, `wherenv` degrades gracefully
+  with no change in output.
+- **Other version managers** (asdf, nix-env, etc.) are not yet traced — they
+  activate through hooks outside the standard startup sequence.
 - **Interactively-typed exports can't be traced** — a variable you `export` by
   hand in a session isn't part of any startup file; it may show up as
   `inherited`.
