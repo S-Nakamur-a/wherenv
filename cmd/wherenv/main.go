@@ -14,6 +14,7 @@ import (
 	"github.com/S-Nakamur-a/wherenv/internal/direnv"
 	"github.com/S-Nakamur-a/wherenv/internal/env"
 	"github.com/S-Nakamur-a/wherenv/internal/inherit"
+	"github.com/S-Nakamur-a/wherenv/internal/mise"
 	"github.com/S-Nakamur-a/wherenv/internal/report"
 	"github.com/S-Nakamur-a/wherenv/internal/tracer"
 )
@@ -161,9 +162,13 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	// ── Classify ──────────────────────────────────────────────────────────────
 	findings := classify.Classify(results, snap, keys)
 
-	// ── Tool probe: direnv → Inherited fallback ───────────────────────────────
+	// ── Tool probe: direnv → mise → Inherited fallback ───────────────────────
 	// S1: all names were already validated above.
-	elevateOrigins(findings, snap, inherit.Probe)
+	// mise.Probe is called once here (outside any per-var loop) to build the
+	// full map of mise-managed variables. The map is then passed to
+	// elevateOrigins which processes each variable in order.
+	miseSources := mise.Probe(mise.DefaultRunner)
+	elevateOrigins(findings, snap, miseSources, inherit.Probe)
 
 	// ── Report ────────────────────────────────────────────────────────────────
 	opts := report.Options{
@@ -190,24 +195,32 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 // elevateOrigins iterates over findings and, for each Inherited variable,
 // checks in order: (1) direnv probe — if it matches, the finding is promoted
-// to Toolset (proven provenance); (2) launchctl probe via launchctlProbe —
-// fills InheritedSource for macOS session-level variables. Only Inherited
-// findings are touched; Startup/Unset/Toolset pass through unchanged.
+// to Toolset; (2) mise probe via miseSources map — if a match is found, also
+// elevated to Toolset; (3) launchctl probe via launchctlProbe — fills
+// InheritedSource for macOS session-level variables. Only Inherited findings
+// are touched; Startup/Unset/Toolset pass through unchanged.
 //
-// The launchctlProbe parameter is injected so callers in tests can supply a
-// stub without spawning exec.Command (S5 is the caller's responsibility).
-func elevateOrigins(findings []report.Finding, snap map[string]string, launchctlProbe func(string) string) {
+// miseSources is the pre-built map from mise.Probe (called once outside this
+// function to avoid per-variable exec calls). launchctlProbe is injected so
+// callers in tests can supply a stub without spawning exec.Command (S5).
+func elevateOrigins(findings []report.Finding, snap map[string]string, miseSources map[string]report.ToolSource, launchctlProbe func(string) string) {
 	for i := range findings {
 		if findings[i].Origin != report.Inherited {
 			continue
 		}
+		// 1. direnv: DIRENV_DIFF-based probe — most specific, checked first.
 		if src, ok := direnv.Probe(snap, findings[i].Name); ok {
-			// direnv: proven provenance — elevate to Toolset, skip launchctl.
 			findings[i].Origin = report.Toolset
 			findings[i].ToolSource = &src
 			continue
 		}
-		// S5: launchctlProbe calls exec.Command with name as a separate arg (no shell).
+		// 2. mise: pre-built map from `mise env --json-extended`.
+		if src, ok := miseSources[findings[i].Name]; ok {
+			findings[i].Origin = report.Toolset
+			findings[i].ToolSource = &src
+			continue
+		}
+		// 3. launchctl: macOS session-level env store (S5: no shell interpolation).
 		findings[i].InheritedSource = launchctlProbe(findings[i].Name)
 	}
 }

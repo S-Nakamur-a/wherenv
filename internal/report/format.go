@@ -345,21 +345,35 @@ func printToolset(w io.Writer, f Finding, opts Options) error {
 		return nil
 	}
 
-	// Header uses ToolSource.Tool so future tools (mise, etc.) render correctly.
+	// Header: always uses ToolSource.Tool (tool-agnostic, not hardcoded).
 	fmt.Fprintf(w, "%s: set by %s\n", pal.name(f.Name), f.ToolSource.Tool)
 
 	if f.ToolSource.File != "" {
-		fmt.Fprintf(w, "  %s\n", pal.loc("→ from .envrc:  "+sanitize(f.ToolSource.File)))
+		fmt.Fprintf(w, "  %s\n", pal.loc("→ from "+sanitize(f.ToolSource.File)))
 	} else {
-		fmt.Fprintln(w, pal.dim("  → set by direnv (source path unavailable: DIRENV_FILE not set)"))
+		fmt.Fprintf(w, "  %s\n", pal.dim("→ set by "+f.ToolSource.Tool+" (source path unavailable)"))
 	}
 
-	fmt.Fprintln(w, pal.dim("  (direnv loads this in the current directory, after your shell startup — directory-scoped)"))
+	fmt.Fprintln(w, pal.dim("  ("+toolScopeNote(f.ToolSource.Tool)+")"))
 
 	if (opts.ShowValue || opts.FullValue) && f.ToolSource.Value != "" {
 		fmt.Fprintf(w, "  %s\n", pal.dim("→  "+sanitizeToolValue(f.ToolSource.Value, opts)))
 	}
 	return nil
+}
+
+// toolScopeNote returns the parenthetical scope note appended below the
+// source-file line. Each tool gets a tailored description; unknown tools
+// fall back to a generic note.
+func toolScopeNote(tool string) string {
+	switch tool {
+	case "direnv":
+		return "direnv loads this in the current directory, after your shell startup — directory-scoped"
+	case "mise":
+		return "mise loads this from the nearest mise.toml, after your shell startup — directory-scoped"
+	default:
+		return tool + " sets this after your shell startup — directory-scoped"
+	}
 }
 
 // sanitizeToolValue applies sanitize and optional truncation to a raw tool

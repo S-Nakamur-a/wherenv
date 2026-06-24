@@ -364,8 +364,16 @@ func TestPrintTextToolsetNoFile(t *testing.T) {
 		},
 	}
 	got := renderText(t, findings, Options{})
-	if !strings.Contains(got, "DIRENV_FILE not set") {
-		t.Errorf("expected DIRENV_FILE-not-set notice; got %q", got)
+	// When File is empty the output must describe unavailability using the tool name,
+	// without any direnv-specific keys like "DIRENV_FILE".
+	if !strings.Contains(got, "source path unavailable") {
+		t.Errorf("expected 'source path unavailable' notice; got %q", got)
+	}
+	if !strings.Contains(got, "set by direnv") {
+		t.Errorf("expected 'set by direnv' in unavailable-source line; got %q", got)
+	}
+	if strings.Contains(got, "DIRENV_FILE") {
+		t.Errorf("output must not reference DIRENV_FILE (tool-agnostic format); got %q", got)
 	}
 }
 
@@ -450,6 +458,94 @@ func TestPrintTextToolsetEmptyValueNotShown(t *testing.T) {
 	// The "→  " value prefix must not appear when Value is empty.
 	if strings.Contains(got, "→  ") {
 		t.Errorf("empty Value must not produce a value line; got %q", got)
+	}
+}
+
+// ── Step 3: mise-specific Toolset text output tests ───────────────────────────
+
+// TestPrintTextToolsetMiseWithFile verifies that a mise Toolset finding
+// renders "set by mise" + the mise.toml path + the mise scope note, and does
+// NOT contain any direnv-specific strings.
+func TestPrintTextToolsetMiseWithFile(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_MISE_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "mise",
+				File:  "/project/mise.toml",
+				Value: "hello",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{})
+	if !strings.Contains(got, "MY_MISE_VAR: set by mise") {
+		t.Errorf("expected 'set by mise' header; got %q", got)
+	}
+	if !strings.Contains(got, "/project/mise.toml") {
+		t.Errorf("expected mise.toml path in output; got %q", got)
+	}
+	if !strings.Contains(got, "directory-scoped") {
+		t.Errorf("expected 'directory-scoped' in scope note; got %q", got)
+	}
+	if !strings.Contains(got, "mise") {
+		t.Errorf("expected 'mise' in scope note; got %q", got)
+	}
+	// Must NOT contain direnv-specific strings.
+	if strings.Contains(got, ".envrc") {
+		t.Errorf("mise output must not mention .envrc; got %q", got)
+	}
+	if strings.Contains(got, "DIRENV") {
+		t.Errorf("mise output must not mention DIRENV; got %q", got)
+	}
+	// Value must be hidden by default.
+	if strings.Contains(got, "hello") {
+		t.Errorf("default output must not reveal the value; got %q", got)
+	}
+}
+
+// TestPrintTextToolsetMiseNoFile verifies the File=="" code path for mise:
+// the output must use the tool name, not reference DIRENV_FILE.
+func TestPrintTextToolsetMiseNoFile(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_MISE_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "mise",
+				File:  "",
+				Value: "hello",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{})
+	if !strings.Contains(got, "source path unavailable") {
+		t.Errorf("expected 'source path unavailable'; got %q", got)
+	}
+	if strings.Contains(got, ".envrc") {
+		t.Errorf("mise no-file output must not mention .envrc; got %q", got)
+	}
+	if strings.Contains(got, "DIRENV") {
+		t.Errorf("mise no-file output must not mention DIRENV; got %q", got)
+	}
+}
+
+// TestPrintTextToolsetMiseShowValue verifies -v reveals the value for mise.
+func TestPrintTextToolsetMiseShowValue(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_MISE_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "mise",
+				File:  "/project/mise.toml",
+				Value: "secret",
+			},
+		},
+	}
+	got := renderText(t, findings, Options{ShowValue: true})
+	if !strings.Contains(got, "secret") {
+		t.Errorf("show-value should reveal the mise value; got %q", got)
 	}
 }
 
@@ -638,6 +734,45 @@ func TestPrintJSONToolsetFileAlwaysSanitized(t *testing.T) {
 	got := renderJSON(t, findings, Options{})
 	if strings.Contains(got, "\x1b") {
 		t.Errorf("file path must be sanitized in JSON output; got:\n%s", got)
+	}
+}
+
+// TestPrintJSONToolsetMise verifies that a mise ToolSource produces
+// origin:"toolset", tool_source.tool:"mise", and hides the value by default
+// (acceptance condition 6: --json output for mise).
+func TestPrintJSONToolsetMise(t *testing.T) {
+	findings := []Finding{
+		{
+			Name:   "MY_MISE_VAR",
+			Origin: Toolset,
+			ToolSource: &ToolSource{
+				Tool:  "mise",
+				File:  "/project/mise.toml",
+				Value: "secret",
+			},
+		},
+	}
+	// Default: value hidden.
+	got := renderJSON(t, findings, Options{})
+	if !strings.Contains(got, `"origin": "toolset"`) {
+		t.Errorf("expected origin=toolset in JSON; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"tool": "mise"`) {
+		t.Errorf("expected tool=mise in JSON; got:\n%s", got)
+	}
+	if strings.Contains(got, "secret") {
+		t.Errorf("default JSON must not reveal the value; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"value": "<hidden>"`) {
+		t.Errorf("expected value=<hidden> in default JSON; got:\n%s", got)
+	}
+	if !strings.Contains(got, `"file": "/project/mise.toml"`) {
+		t.Errorf("expected file=mise.toml in JSON; got:\n%s", got)
+	}
+	// --show-value reveals it.
+	gotShow := renderJSON(t, findings, Options{ShowValue: true})
+	if !strings.Contains(gotShow, `"value": "secret"`) {
+		t.Errorf("show-value JSON should reveal mise value; got:\n%s", gotShow)
 	}
 }
 
