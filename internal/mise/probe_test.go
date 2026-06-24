@@ -102,9 +102,6 @@ func TestProbeNormalVarGolden(t *testing.T) {
 	if src.File != realMiseTomlPath {
 		t.Errorf("File: got %q, want %q", src.File, realMiseTomlPath)
 	}
-	if src.Value != "hello-from-mise" {
-		t.Errorf("Value: got %q, want %q", src.Value, "hello-from-mise")
-	}
 }
 
 // ── (b) PATH (source absent) must be excluded ─────────────────────────────────
@@ -121,31 +118,18 @@ func TestProbePathExcluded(t *testing.T) {
 
 // ── (c) Edge-case values: spaces, tabs, '=', trailing spaces ─────────────────
 
-// TestProbeEdgeCaseValues tests that Probe preserves all the tricky value forms
-// losslessly. The fixture is verbatim real mise output.
+// TestProbeEdgeCaseValues verifies that variables whose values contain tricky
+// forms (spaces, tabs, '=', trailing spaces) are still detected by source. The
+// value itself is never read or retained, so we only assert presence here.
 func TestProbeEdgeCaseValues(t *testing.T) {
 	runner := func() ([]byte, error) {
 		return []byte(fixtureEdgeCases), nil
 	}
 	got := Probe(runner)
 
-	cases := []struct {
-		name  string
-		value string
-	}{
-		{"SPACE_VAR", "value with spaces"},
-		{"TAB_VAR", "value\twith\ttabs"},
-		{"EQUALS_VAR", "key=value=more"},
-		{"TRAILING_VAR", "trailing space   "},
-	}
-	for _, tc := range cases {
-		src, ok := got[tc.name]
-		if !ok {
-			t.Errorf("%s: missing from result map", tc.name)
-			continue
-		}
-		if src.Value != tc.value {
-			t.Errorf("%s Value: got %q, want %q", tc.name, src.Value, tc.value)
+	for _, name := range []string{"SPACE_VAR", "TAB_VAR", "EQUALS_VAR", "TRAILING_VAR"} {
+		if _, ok := got[name]; !ok {
+			t.Errorf("%s: missing from result map", name)
 		}
 	}
 }
@@ -321,9 +305,6 @@ func TestProbeSourcePresentValueEmpty(t *testing.T) {
 	src, ok := got["X"]
 	if !ok {
 		t.Fatal("entry with valid source but empty value must be included")
-	}
-	if src.Value != "" {
-		t.Errorf("Value: got %q, want empty string", src.Value)
 	}
 	if src.File != "/path/to/mise.toml" {
 		t.Errorf("File: got %q, want /path/to/mise.toml", src.File)

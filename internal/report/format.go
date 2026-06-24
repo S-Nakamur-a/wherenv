@@ -10,20 +10,13 @@ import (
 	"github.com/S-Nakamur-a/wherenv/internal/tracer"
 )
 
-// maxRawCodeDefault is the default display limit for RawCode values when values
-// are revealed (--show-value). Longer lines are truncated with "…".
-const maxRawCodeDefault = 120
-
-// valueHidden replaces the right-hand side of an assignment when values are not
-// revealed. Values are hidden by DEFAULT so secrets (tokens, keys) are never
-// printed unless explicitly requested.
-const valueHidden = "<hidden>"
-
 // Options controls the formatter's output behaviour.
+//
+// There is deliberately no "show value" option: wherenv never holds variable
+// values (they are dropped at capture time), so there is nothing to reveal.
+// The formatter only ever prints locations and provenance.
 type Options struct {
 	JSON      bool // ADR-7: emit JSON instead of text
-	ShowValue bool // reveal variable values (truncated); default false → values redacted
-	FullValue bool // reveal full, untruncated values (implies ShowValue)
 	Color     bool // colorize text output (never applies to JSON)
 	ShowModes bool // true when >1 mode was traced: tag sites by mode and show
 	// per-mode winners. When false (single mode) the output is a simple
@@ -33,7 +26,7 @@ type Options struct {
 // Print writes all findings to w in text or JSON format.
 func Print(w io.Writer, findings []Finding, opts Options) error {
 	if opts.JSON {
-		return printJSON(w, findings, opts)
+		return printJSON(w, findings)
 	}
 	return printText(w, findings, opts)
 }
@@ -41,28 +34,29 @@ func Print(w io.Writer, findings []Finding, opts Options) error {
 // ── JSON output ──────────────────────────────────────────────────────────────
 
 // jsonFinding is the stable JSON structure emitted for ADR-7.
+//
+// There is no value/raw_code field: wherenv never carries values, so the JSON
+// reports only locations and provenance.
 type jsonFinding struct {
-	Name            string          `json:"name"`
-	Origin          string          `json:"origin"`
-	Sites           []jsonSite      `json:"sites,omitempty"`
-	Verdict         *jsonVerdict    `json:"verdict,omitempty"`
-	InheritedSource string          `json:"inherited_source,omitempty"`
-	ToolSource      *jsonToolSource `json:"tool_source,omitempty"`
-	SentinelMissing bool            `json:"sentinel_missing,omitempty"`
+	Name                 string          `json:"name"`
+	Origin               string          `json:"origin"`
+	Sites                []jsonSite      `json:"sites,omitempty"`
+	Verdict              *jsonVerdict    `json:"verdict,omitempty"`
+	InheritedFromLaunchd bool            `json:"inherited_from_launchd,omitempty"`
+	ToolSource           *jsonToolSource `json:"tool_source,omitempty"`
+	SentinelMissing      bool            `json:"sentinel_missing,omitempty"`
 }
 
 // jsonToolSource is the JSON representation of a ToolSource (ADR-8).
 type jsonToolSource struct {
-	Tool  string `json:"tool"`
-	File  string `json:"file,omitempty"`
-	Value string `json:"value,omitempty"`
+	Tool string `json:"tool"`
+	File string `json:"file,omitempty"`
 }
 
 type jsonSite struct {
 	File       string   `json:"file"`
 	Line       int      `json:"line"`
 	Confidence string   `json:"line_confidence"`
-	RawCode    string   `json:"raw_code,omitempty"`
 	Append     bool     `json:"append,omitempty"`
 	Modes      []string `json:"modes"`
 }
@@ -72,37 +66,25 @@ type jsonVerdict struct {
 	HasAppend bool                `json:"has_append,omitempty"`
 }
 
-func printJSON(w io.Writer, findings []Finding, opts Options) error {
+func printJSON(w io.Writer, findings []Finding) error {
 	out := make([]jsonFinding, 0, len(findings))
 	for _, f := range findings {
-		inheritedSrc := f.InheritedSource
-		if inheritedSrc != "" && !opts.ShowValue && !opts.FullValue {
-			inheritedSrc = valueHidden // hide the value by default, like assignment RHS
-		} else {
-			inheritedSrc = sanitize(inheritedSrc) // S7
-		}
 		jf := jsonFinding{
-			Name:            f.Name,
-			Origin:          originString(f.Origin),
-			InheritedSource: inheritedSrc,
-			SentinelMissing: f.SentinelMissing,
+			Name:                 f.Name,
+			Origin:               originString(f.Origin),
+			InheritedFromLaunchd: f.InheritedFromLaunchd,
+			SentinelMissing:      f.SentinelMissing,
 		}
 		for _, s := range f.Sites {
-			js := siteToJSON(s, opts)
+			js := siteToJSON(s)
 			jf.Sites = append(jf.Sites, js)
 		}
 		if f.Origin == Toolset && f.ToolSource != nil {
 			ts := f.ToolSource
-			jts := &jsonToolSource{
+			jf.ToolSource = &jsonToolSource{
 				Tool: ts.Tool,
 				File: sanitize(ts.File),
 			}
-			if opts.ShowValue || opts.FullValue {
-				jts.Value = sanitize(ts.Value)
-			} else if ts.Value != "" {
-				jts.Value = valueHidden
-			}
-			jf.ToolSource = jts
 		}
 		if f.Origin == Startup && len(f.Verdict.PerMode) > 0 {
 			jv := &jsonVerdict{
@@ -110,10 +92,7 @@ func printJSON(w io.Writer, findings []Finding, opts Options) error {
 				HasAppend: f.Verdict.HasAppend,
 			}
 			for mode, site := range f.Verdict.PerMode {
-				// Winner block: omit RawCode (file:line + append note only, per A3).
-				js := siteToJSON(*site, opts)
-				js.RawCode = ""
-				jv.PerMode[modeString(mode)] = js
+				jv.PerMode[modeString(mode)] = siteToJSON(*site)
 			}
 			jf.Verdict = jv
 		}
@@ -122,17 +101,16 @@ func printJSON(w io.Writer, findings []Finding, opts Options) error {
 	enc := json.NewEncoder(w)
 	enc.SetIndent("", "  ")
 	// Output is consumed as JSON/CLI text, not embedded in HTML; keep '<', '>',
-	// '&' literal (e.g. the "<hidden>" redaction marker) instead of \u00XX.
+	// '&' literal instead of \u00XX.
 	enc.SetEscapeHTML(false)
 	return enc.Encode(out)
 }
 
-func siteToJSON(s AssignmentSite, opts Options) jsonSite {
+func siteToJSON(s AssignmentSite) jsonSite {
 	js := jsonSite{
 		File:       sanitize(s.File),
 		Line:       s.Line,
 		Confidence: confidenceString(s.LineConf),
-		RawCode:    displayRawCode(s.RawCode, opts),
 		Append:     s.Append,
 	}
 	for _, m := range s.Modes {
@@ -155,34 +133,6 @@ func printText(w io.Writer, findings []Finding, opts Options) error {
 	return nil
 }
 
-// AnyStartupValue reports whether any finding has a startup site with an
-// assignment whose value would be shown. Used by the CLI to decide whether to
-// print the "values hidden" hint.
-func AnyStartupValue(findings []Finding) bool {
-	for _, f := range findings {
-		if f.Origin == Startup {
-			for _, s := range f.Sites {
-				if strings.ContainsRune(s.RawCode, '=') {
-					return true
-				}
-			}
-		}
-	}
-	return false
-}
-
-// AnyToolsetValue reports whether any finding is a Toolset origin with a
-// non-empty value. Used by the CLI to extend the "values hidden" hint to
-// direnv-set variables.
-func AnyToolsetValue(findings []Finding) bool {
-	for _, f := range findings {
-		if f.Origin == Toolset && f.ToolSource != nil && f.ToolSource.Value != "" {
-			return true
-		}
-	}
-	return false
-}
-
 func printOneFinding(w io.Writer, f Finding, opts Options) error {
 	switch f.Origin {
 	case Startup:
@@ -202,14 +152,14 @@ func printOneFinding(w io.Writer, f Finding, opts Options) error {
 func printStartup(w io.Writer, f Finding, opts Options) error {
 	pal := palette{on: opts.Color}
 	if opts.ShowModes {
-		return printStartupByMode(w, f, pal, opts)
+		return printStartupByMode(w, f, pal)
 	}
-	return printStartupStack(w, f, pal, opts)
+	return printStartupStack(w, f, pal)
 }
 
 // printStartupStack renders the single-mode view like a stack trace: the most
 // recent (effective) assignment first, older overridden ones below it.
-func printStartupStack(w io.Writer, f Finding, pal palette, opts Options) error {
+func printStartupStack(w io.Writer, f Finding, pal palette) error {
 	n := len(f.Sites)
 	suffix := ""
 	if n > 1 {
@@ -252,20 +202,13 @@ func printStartupStack(w io.Writer, f Finding, pal palette, opts Options) error 
 		default:
 			fmt.Fprintf(w, "    %s%s\n", pal.loc(fileLine), pal.dim(conf))
 		}
-		if raw := displayRawCode(s.RawCode, opts); raw != "" {
-			indent := "      "
-			if n == 1 {
-				indent = "    "
-			}
-			fmt.Fprintf(w, "%s%s\n", indent, pal.dim(raw))
-		}
 	}
 	return nil
 }
 
 // printStartupByMode renders the --mode both view: each site tagged with the
 // mode(s) it appeared in, plus per-mode winners (the answer differs by mode).
-func printStartupByMode(w io.Writer, f Finding, pal palette, opts Options) error {
+func printStartupByMode(w io.Writer, f Finding, pal palette) error {
 	fmt.Fprintf(w, "%s: set by startup\n", pal.name(f.Name))
 	if f.SentinelMissing {
 		fmt.Fprintln(w, pal.warn("  (warning: startup trace may be incomplete — shell exited before sentinel)"))
@@ -276,9 +219,6 @@ func printStartupByMode(w io.Writer, f Finding, pal palette, opts Options) error
 		modes := formatModes(s.Modes)
 		conf := formatConfidence(s.LineConf, s.ShellVersion)
 		fmt.Fprintf(w, "  %s %s%s\n", pal.loc(fileLine), pal.dim("["+modes+"]"), pal.dim(conf))
-		if raw := displayRawCode(s.RawCode, opts); raw != "" {
-			fmt.Fprintf(w, "    %s\n", pal.dim(raw))
-		}
 		if s.Append {
 			fmt.Fprintln(w, pal.dim("    (appends with +=)"))
 		}
@@ -297,12 +237,8 @@ func printStartupByMode(w io.Writer, f Finding, pal palette, opts Options) error
 			if site.Append {
 				appendNote = " (+=)"
 			}
-			valuePart := ""
-			if (opts.ShowValue || opts.FullValue) && site.RawCode != "" {
-				valuePart = "  →  " + pal.dim(displayRawCode(site.RawCode, opts))
-			}
 			// Tab after the mode tag so file:line aligns across [login]/[non-login].
-			fmt.Fprintf(w, "    [%s]\t%s%s%s%s\n", modeString(mode), pal.winner(fileLine), pal.dim(conf), appendNote, valuePart)
+			fmt.Fprintf(w, "    [%s]\t%s%s%s\n", modeString(mode), pal.winner(fileLine), pal.dim(conf), appendNote)
 		}
 		if f.Verdict.HasAppend {
 			fmt.Fprintln(w, pal.dim("    (chain includes += assignments)"))
@@ -323,12 +259,8 @@ func printInherited(w io.Writer, f Finding, opts Options) error {
 		return nil
 	}
 
-	if f.InheritedSource != "" {
-		src := valueHidden
-		if opts.ShowValue || opts.FullValue {
-			src = sanitize(f.InheritedSource)
-		}
-		fmt.Fprintf(w, "  %s\n", pal.dim("→ set in the launchd session (launchctl: "+src+")"))
+	if f.InheritedFromLaunchd {
+		fmt.Fprintf(w, "  %s\n", pal.dim("→ set in the launchd session (via launchctl)"))
 	} else {
 		fmt.Fprintln(w, pal.dim("  → inherited from the parent process, or exported interactively / by a tool (these can't be traced)"))
 	}
@@ -355,10 +287,6 @@ func printToolset(w io.Writer, f Finding, opts Options) error {
 	}
 
 	fmt.Fprintln(w, pal.dim("  ("+toolScopeNote(f.ToolSource.Tool)+")"))
-
-	if (opts.ShowValue || opts.FullValue) && f.ToolSource.Value != "" {
-		fmt.Fprintf(w, "  %s\n", pal.dim("→  "+sanitizeToolValue(f.ToolSource.Value, opts)))
-	}
 	return nil
 }
 
@@ -374,20 +302,6 @@ func toolScopeNote(tool string) string {
 	default:
 		return tool + " sets this after your shell startup — directory-scoped"
 	}
-}
-
-// sanitizeToolValue applies sanitize and optional truncation to a raw tool
-// value (not a shell assignment line, so redactValue is not applicable).
-func sanitizeToolValue(v string, opts Options) string {
-	s := sanitize(v)
-	if opts.FullValue {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) > maxRawCodeDefault {
-		return string(runes[:maxRawCodeDefault]) + "…"
-	}
-	return s
 }
 
 // ── Formatting helpers ────────────────────────────────────────────────────────
@@ -439,42 +353,6 @@ func formatModes(modes []tracer.Mode) string {
 		parts = append(parts, modeString(m))
 	}
 	return strings.Join(parts, "+")
-}
-
-// ── Display helpers ───────────────────────────────────────────────────────────
-
-// displayRawCode applies the 3-level value rule to a raw assignment line:
-//   - default (values hidden): redact the right-hand side → `export FOO=<hidden>`
-//   - ShowValue: sanitized, truncated to maxRawCodeDefault runes with "…"
-//   - FullValue: sanitized, full
-func displayRawCode(raw string, opts Options) string {
-	if raw == "" {
-		return ""
-	}
-	if !opts.ShowValue && !opts.FullValue {
-		return redactValue(raw)
-	}
-	s := sanitize(raw)
-	if opts.FullValue {
-		return s
-	}
-	runes := []rune(s)
-	if len(runes) > maxRawCodeDefault {
-		return string(runes[:maxRawCodeDefault]) + "…"
-	}
-	return s
-}
-
-// redactValue hides the right-hand side of an assignment, keeping the variable
-// name and operator so the reader still sees HOW it was set without the value.
-// `export FOO=secret` → `export FOO=<hidden>`; a valueless `export FOO` is
-// returned unchanged (there is nothing to hide).
-func redactValue(raw string) string {
-	s := sanitize(raw)
-	if i := strings.IndexByte(s, '='); i >= 0 {
-		return s[:i+1] + valueHidden
-	}
-	return s
 }
 
 // ── String converters ─────────────────────────────────────────────────────────

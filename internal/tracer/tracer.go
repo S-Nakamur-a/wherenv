@@ -28,14 +28,18 @@ const (
 )
 
 // AssignEvent records one assignment trace line.
+//
+// Security: the assignment's right-hand side (the variable's value) is
+// deliberately NOT retained. We parse the value out of the xtrace line only
+// long enough to recover the variable name and the "+=" vs "=" operator, then
+// discard it. wherenv reports WHERE a variable was set, never its value.
 type AssignEvent struct {
 	Name     string
 	File     string
 	Line     int
 	LineConf LineConfidence
-	RawCode  string
-	Append   bool  // true when "+=" was used
-	Order    int   // 0-based position among events for this shell+mode run
+	Append   bool // true when "+=" was used
+	Order    int  // 0-based position among events for this shell+mode run
 }
 
 // TraceResult holds all events from one shell spawn (one shell, one mode).

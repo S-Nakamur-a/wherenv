@@ -22,12 +22,14 @@ func makeStartupFinding(name string, sites []AssignmentSite, perMode map[tracer.
 	}
 }
 
-func makeSite(file string, line int, rawCode string, append_ bool, modes ...tracer.Mode) AssignmentSite {
+// makeSite keeps a rawCode parameter for call-site readability, but the value is
+// intentionally not stored: AssignmentSite no longer carries it (wherenv never
+// holds variable values).
+func makeSite(file string, line int, _ string, append_ bool, modes ...tracer.Mode) AssignmentSite {
 	return AssignmentSite{
 		File:     file,
 		Line:     line,
 		LineConf: tracer.LineExact,
-		RawCode:  rawCode,
 		Append:   append_,
 		Modes:    modes,
 	}
@@ -75,22 +77,17 @@ func TestPrintTextInheritedNoSource(t *testing.T) {
 	}
 }
 
-func TestPrintTextInheritedWithSource(t *testing.T) {
+func TestPrintTextInheritedFromLaunchd(t *testing.T) {
 	findings := []Finding{
-		{Name: "TERM_PROGRAM", Origin: Inherited, InheritedSource: "iTerm.app"},
+		{Name: "TERM_PROGRAM", Origin: Inherited, InheritedFromLaunchd: true},
 	}
-	// Default hides the launchctl value.
 	got := renderText(t, findings, Options{})
-	if strings.Contains(got, "iTerm.app") {
-		t.Errorf("default should hide the launchctl value; got %q", got)
+	if !strings.Contains(got, "set in the launchd session") {
+		t.Errorf("expected launchd-session provenance line; got %q", got)
 	}
-	if !strings.Contains(got, "launchctl: <hidden>") {
-		t.Errorf("expected redacted launchctl source; got %q", got)
-	}
-	// --show-value reveals it.
-	gotShow := renderText(t, findings, Options{ShowValue: true})
-	if !strings.Contains(gotShow, "launchctl: iTerm.app") {
-		t.Errorf("show-value should reveal launchctl source; got %q", gotShow)
+	// No value is ever held, so the launchctl value cannot leak.
+	if strings.Contains(got, "launchctl:") {
+		t.Errorf("output must not present a launchctl value; got %q", got)
 	}
 }
 
@@ -118,36 +115,24 @@ func TestPrintTextStartupSimple(t *testing.T) {
 				makeSite("/etc/zshrc", 5, "export FOO=hello", false, tracer.NonLogin),
 			},
 			map[tracer.Mode]*AssignmentSite{
-				tracer.NonLogin: {File: "/etc/zshrc", Line: 5, LineConf: tracer.LineExact, RawCode: "export FOO=hello", Append: false, Modes: []tracer.Mode{tracer.NonLogin}},
+				tracer.NonLogin: {File: "/etc/zshrc", Line: 5, LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.NonLogin}},
 			},
 			false, false),
 	}
-	// Multi-mode (--mode both): value is hidden.
+	// Multi-mode (--mode both): location only, never the value.
 	got := renderText(t, findings, Options{ShowModes: true})
 	want := "FOO: set by startup\n" +
 		"  /etc/zshrc:5 [non-login]\n" +
-		"    export FOO=<hidden>\n" +
 		"  winner:\n" +
 		"    [non-login]\t/etc/zshrc:5\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
-
-	// --show-value: real value appears, including on the winner line.
-	gotShow := renderText(t, findings, Options{ShowValue: true, ShowModes: true})
-	wantShow := "FOO: set by startup\n" +
-		"  /etc/zshrc:5 [non-login]\n" +
-		"    export FOO=hello\n" +
-		"  winner:\n" +
-		"    [non-login]\t/etc/zshrc:5  →  export FOO=hello\n"
-	if gotShow != wantShow {
-		t.Errorf("show-value got:\n%q\nwant:\n%q", gotShow, wantShow)
-	}
 }
 
 func TestPrintTextStartupStack(t *testing.T) {
 	// Facts only: assignments listed most-recent-first; the last-executed one is
-	// marked "← ran last". No override/cumulative claims.
+	// marked "← ran last". No override/cumulative claims, no values.
 	winner := &AssignmentSite{File: "/c.zsh", Line: 21, LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.Login}}
 	findings := []Finding{
 		makeStartupFinding("PATH",
@@ -163,11 +148,8 @@ func TestPrintTextStartupStack(t *testing.T) {
 	want := "PATH: set by startup  (3 places, most recent first)\n" +
 		"\n" +
 		"  → /c.zsh:21   ← ran last\n" +
-		"      export PATH=<hidden>\n" +
 		"    /b.zsh:88\n" +
-		"      export PATH=<hidden>\n" +
-		"    /a.zsh:3\n" +
-		"      export PATH=<hidden>\n"
+		"    /a.zsh:3\n"
 	if got != want {
 		t.Errorf("got:\n%q\nwant:\n%q", got, want)
 	}
@@ -192,9 +174,7 @@ func TestPrintTextStartupMultiSite(t *testing.T) {
 	got := renderText(t, findings, Options{ShowModes: true})
 	want := "FOO: set by startup\n" +
 		"  /etc/zshrc:5 [non-login+login]\n" +
-		"    export FOO=<hidden>\n" +
 		"  /etc/zprofile:2 [login]\n" +
-		"    export FOO=<hidden>\n" +
 		"  winner:\n" +
 		"    [non-login]\t/etc/zshrc:5\n" +
 		"    [login]\t/etc/zprofile:2\n"
@@ -215,7 +195,6 @@ func TestPrintTextStartupWithAppend(t *testing.T) {
 	got := renderText(t, findings, Options{ShowModes: true})
 	want := "PATH: set by startup\n" +
 		"  /home/u/.zshrc:10 [non-login]\n" +
-		"    PATH+=<hidden>\n" +
 		"    (appends with +=)\n" +
 		"  winner:\n" +
 		"    [non-login]\t/home/u/.zshrc:10 (+=)\n" +
@@ -240,67 +219,25 @@ func TestPrintTextStartupSentinelMissing(t *testing.T) {
 	}
 }
 
-func TestPrintTextDefaultHidesValue(t *testing.T) {
+// TestPrintTextNeverShowsValue is a regression fence: even when a finding is
+// built from a "SECRET=hunter2" assignment, the value is dropped at capture time
+// and so can never appear in the formatted output.
+func TestPrintTextNeverShowsValue(t *testing.T) {
 	findings := []Finding{
 		makeStartupFinding("SECRET",
 			[]AssignmentSite{makeSite("/etc/zshrc", 3, "SECRET=hunter2", false, tracer.NonLogin)},
 			map[tracer.Mode]*AssignmentSite{
-				tracer.NonLogin: {File: "/etc/zshrc", Line: 3, LineConf: tracer.LineExact, RawCode: "SECRET=hunter2"},
+				tracer.NonLogin: {File: "/etc/zshrc", Line: 3, LineConf: tracer.LineExact},
 			},
 			false, false),
 	}
-	// Default must never leak the value.
 	got := renderText(t, findings, Options{})
 	if strings.Contains(got, "hunter2") {
-		t.Errorf("default output must NOT contain the secret value; got:\n%s", got)
+		t.Errorf("output must never contain the secret value; got:\n%s", got)
 	}
-	if !strings.Contains(got, "SECRET=<hidden>") {
-		t.Errorf("default output should redact as SECRET=<hidden>; got:\n%s", got)
-	}
-}
-
-func TestPrintTextValueVerbosity(t *testing.T) {
-	// Raw code longer than maxRawCodeDefault (120) to verify the 3 levels.
-	longCode := "export FOO=" + strings.Repeat("a", 130)
-	findings := []Finding{
-		makeStartupFinding("FOO",
-			[]AssignmentSite{makeSite("/etc/zshrc", 1, longCode, false, tracer.NonLogin)},
-			map[tracer.Mode]*AssignmentSite{
-				tracer.NonLogin: {File: "/etc/zshrc", Line: 1, LineConf: tracer.LineExact, RawCode: longCode},
-			},
-			false, false),
-	}
-
-	// Default: value hidden regardless of length.
-	gotDefault := renderText(t, findings, Options{})
-	if strings.Contains(gotDefault, "aaaa") {
-		t.Errorf("default should hide the value; got %q", gotDefault)
-	}
-	if !strings.Contains(gotDefault, "export FOO=<hidden>") {
-		t.Errorf("default should redact; got %q", gotDefault)
-	}
-
-	// --show-value: truncated at 120 runes with "…".
-	gotShow := renderText(t, findings, Options{ShowValue: true})
-	if !strings.Contains(gotShow, "…") {
-		t.Errorf("show-value should truncate long values with '…'; got %q", gotShow)
-	}
-	for line := range strings.SplitSeq(gotShow, "\n") {
-		trimmed := strings.TrimLeft(line, " ")
-		if strings.HasPrefix(trimmed, "export FOO=") {
-			if runes := []rune(trimmed); len(runes) > maxRawCodeDefault+1 { // +1 for the "…"
-				t.Errorf("truncated line too long: %d runes, want ≤%d", len(runes), maxRawCodeDefault+1)
-			}
-		}
-	}
-
-	// --full-value: full string, no "…".
-	gotFull := renderText(t, findings, Options{FullValue: true})
-	if strings.Contains(gotFull, "…") {
-		t.Errorf("full-value output should not truncate; got %q", gotFull)
-	}
-	if !strings.Contains(gotFull, longCode) {
-		t.Errorf("full-value output should contain full raw code; got %q", gotFull)
+	// And no assignment RHS marker should appear at all.
+	if strings.Contains(got, "SECRET=") {
+		t.Errorf("output must not render an assignment line; got:\n%s", got)
 	}
 }
 
@@ -321,7 +258,7 @@ func TestPrintTextMultipleFindings(t *testing.T) {
 	}
 }
 
-// ── Step 4: Toolset text output tests ────────────────────────────────────────
+// ── Toolset text output tests ────────────────────────────────────────────────
 
 func TestPrintTextToolsetWithFile(t *testing.T) {
 	findings := []Finding{
@@ -329,9 +266,8 @@ func TestPrintTextToolsetWithFile(t *testing.T) {
 			Name:   "MY_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/home/user/project/.envrc",
-				Value: "hello",
+				Tool: "direnv",
+				File: "/home/user/project/.envrc",
 			},
 		},
 	}
@@ -345,10 +281,6 @@ func TestPrintTextToolsetWithFile(t *testing.T) {
 	if !strings.Contains(got, "directory-scoped") {
 		t.Errorf("expected directory-scoped note; got %q", got)
 	}
-	// Value must be hidden by default.
-	if strings.Contains(got, "hello") {
-		t.Errorf("default output must not reveal the value; got %q", got)
-	}
 }
 
 func TestPrintTextToolsetNoFile(t *testing.T) {
@@ -357,9 +289,8 @@ func TestPrintTextToolsetNoFile(t *testing.T) {
 			Name:   "MY_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "",
-				Value: "hello",
+				Tool: "direnv",
+				File: "",
 			},
 		},
 	}
@@ -377,37 +308,17 @@ func TestPrintTextToolsetNoFile(t *testing.T) {
 	}
 }
 
-func TestPrintTextToolsetShowValue(t *testing.T) {
-	findings := []Finding{
-		{
-			Name:   "MY_VAR",
-			Origin: Toolset,
-			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project/.envrc",
-				Value: "secret",
-			},
-		},
-	}
-	got := renderText(t, findings, Options{ShowValue: true})
-	if !strings.Contains(got, "secret") {
-		t.Errorf("show-value should reveal the value; got %q", got)
-	}
-}
-
 // TestPrintTextToolsetHeaderUsesTool verifies that the header line uses
-// ToolSource.Tool, not a hardcoded string. This fixes the design invariant for
-// future tools like mise: a Toolset finding with Tool="mise" must print
-// "set by mise", not "set by direnv".
+// ToolSource.Tool, not a hardcoded string. A Toolset finding with Tool="mise"
+// must print "set by mise", not "set by direnv".
 func TestPrintTextToolsetHeaderUsesTool(t *testing.T) {
 	findings := []Finding{
 		{
 			Name:   "MISE_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "mise",
-				File:  "/project/mise.toml",
-				Value: "val",
+				Tool: "mise",
+				File: "/project/mise.toml",
 			},
 		},
 	}
@@ -420,48 +331,7 @@ func TestPrintTextToolsetHeaderUsesTool(t *testing.T) {
 	}
 }
 
-// TestPrintTextToolsetValueControlChars verifies that S7 sanitize is applied
-// to the tool value in text output (control characters become '?').
-func TestPrintTextToolsetValueControlChars(t *testing.T) {
-	findings := []Finding{
-		{
-			Name:   "MY_VAR",
-			Origin: Toolset,
-			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project/.envrc",
-				Value: "hello\x1b[31mworld",
-			},
-		},
-	}
-	got := renderText(t, findings, Options{ShowValue: true})
-	if strings.Contains(got, "\x1b") {
-		t.Errorf("control characters must be sanitized in text output; got %q", got)
-	}
-}
-
-// TestPrintTextToolsetEmptyValueNotShown verifies that when ToolSource.Value is
-// empty, no value line is emitted even with ShowValue=true.
-func TestPrintTextToolsetEmptyValueNotShown(t *testing.T) {
-	findings := []Finding{
-		{
-			Name:   "MY_VAR",
-			Origin: Toolset,
-			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project/.envrc",
-				Value: "",
-			},
-		},
-	}
-	got := renderText(t, findings, Options{ShowValue: true})
-	// The "→  " value prefix must not appear when Value is empty.
-	if strings.Contains(got, "→  ") {
-		t.Errorf("empty Value must not produce a value line; got %q", got)
-	}
-}
-
-// ── Step 3: mise-specific Toolset text output tests ───────────────────────────
+// ── mise-specific Toolset text output tests ──────────────────────────────────
 
 // TestPrintTextToolsetMiseWithFile verifies that a mise Toolset finding
 // renders "set by mise" + the mise.toml path + the mise scope note, and does
@@ -472,9 +342,8 @@ func TestPrintTextToolsetMiseWithFile(t *testing.T) {
 			Name:   "MY_MISE_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "mise",
-				File:  "/project/mise.toml",
-				Value: "hello",
+				Tool: "mise",
+				File: "/project/mise.toml",
 			},
 		},
 	}
@@ -488,19 +357,12 @@ func TestPrintTextToolsetMiseWithFile(t *testing.T) {
 	if !strings.Contains(got, "directory-scoped") {
 		t.Errorf("expected 'directory-scoped' in scope note; got %q", got)
 	}
-	if !strings.Contains(got, "mise") {
-		t.Errorf("expected 'mise' in scope note; got %q", got)
-	}
 	// Must NOT contain direnv-specific strings.
 	if strings.Contains(got, ".envrc") {
 		t.Errorf("mise output must not mention .envrc; got %q", got)
 	}
 	if strings.Contains(got, "DIRENV") {
 		t.Errorf("mise output must not mention DIRENV; got %q", got)
-	}
-	// Value must be hidden by default.
-	if strings.Contains(got, "hello") {
-		t.Errorf("default output must not reveal the value; got %q", got)
 	}
 }
 
@@ -512,9 +374,8 @@ func TestPrintTextToolsetMiseNoFile(t *testing.T) {
 			Name:   "MY_MISE_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "mise",
-				File:  "",
-				Value: "hello",
+				Tool: "mise",
+				File: "",
 			},
 		},
 	}
@@ -527,25 +388,6 @@ func TestPrintTextToolsetMiseNoFile(t *testing.T) {
 	}
 	if strings.Contains(got, "DIRENV") {
 		t.Errorf("mise no-file output must not mention DIRENV; got %q", got)
-	}
-}
-
-// TestPrintTextToolsetMiseShowValue verifies -v reveals the value for mise.
-func TestPrintTextToolsetMiseShowValue(t *testing.T) {
-	findings := []Finding{
-		{
-			Name:   "MY_MISE_VAR",
-			Origin: Toolset,
-			ToolSource: &ToolSource{
-				Tool:  "mise",
-				File:  "/project/mise.toml",
-				Value: "secret",
-			},
-		},
-	}
-	got := renderText(t, findings, Options{ShowValue: true})
-	if !strings.Contains(got, "secret") {
-		t.Errorf("show-value should reveal the mise value; got %q", got)
 	}
 }
 
@@ -568,25 +410,19 @@ func TestPrintJSONUnset(t *testing.T) {
 
 func TestPrintJSONInherited(t *testing.T) {
 	findings := []Finding{
-		{Name: "TERM", Origin: Inherited, InheritedSource: "launchd"},
+		{Name: "TERM", Origin: Inherited, InheritedFromLaunchd: true},
 	}
-	// Default redacts the launchctl value.
 	got := renderJSON(t, findings, Options{})
 	want := `[
   {
     "name": "TERM",
     "origin": "inherited",
-    "inherited_source": "<hidden>"
+    "inherited_from_launchd": true
   }
 ]
 `
 	if got != want {
 		t.Errorf("got:\n%s\nwant:\n%s", got, want)
-	}
-	// --show-value reveals it.
-	gotShow := renderJSON(t, findings, Options{ShowValue: true})
-	if !strings.Contains(gotShow, `"inherited_source": "launchd"`) {
-		t.Errorf("show-value JSON should reveal source; got:\n%s", gotShow)
 	}
 }
 
@@ -608,7 +444,6 @@ func TestPrintJSONStartupSingleMode(t *testing.T) {
         "file": "/etc/zshrc",
         "line": 5,
         "line_confidence": "exact",
-        "raw_code": "export FOO=<hidden>",
         "modes": [
           "non-login"
         ]
@@ -634,7 +469,9 @@ func TestPrintJSONStartupSingleMode(t *testing.T) {
 	}
 }
 
-func TestPrintJSONDefaultHidesValue(t *testing.T) {
+// TestPrintJSONNeverShowsValue is a regression fence: the JSON output must
+// never carry a value or raw_code, regardless of the source assignment.
+func TestPrintJSONNeverShowsValue(t *testing.T) {
 	winner := &AssignmentSite{File: "/etc/zshrc", Line: 1, LineConf: tracer.LineExact}
 	findings := []Finding{
 		makeStartupFinding("SECRET",
@@ -642,18 +479,12 @@ func TestPrintJSONDefaultHidesValue(t *testing.T) {
 			map[tracer.Mode]*AssignmentSite{tracer.NonLogin: winner},
 			false, false),
 	}
-	// Default JSON must redact the value, never leak it.
 	got := renderJSON(t, findings, Options{})
-	if strings.Contains(got, "SECRET=pw") || strings.Contains(got, `"pw"`) {
-		t.Errorf("default JSON must not contain the secret value; got:\n%s", got)
+	if strings.Contains(got, "pw") {
+		t.Errorf("JSON must not contain the secret value; got:\n%s", got)
 	}
-	if !strings.Contains(got, "SECRET=<hidden>") {
-		t.Errorf("default JSON should redact value; got:\n%s", got)
-	}
-	// --show-value reveals it.
-	gotShow := renderJSON(t, findings, Options{ShowValue: true})
-	if !strings.Contains(gotShow, "SECRET=pw") {
-		t.Errorf("show-value JSON should contain the value; got:\n%s", gotShow)
+	if strings.Contains(got, "raw_code") || strings.Contains(got, "\"value\"") {
+		t.Errorf("JSON must not carry raw_code or value fields; got:\n%s", got)
 	}
 }
 
@@ -672,17 +503,16 @@ func TestPrintJSONSentinelMissing(t *testing.T) {
 	}
 }
 
-// ── Step 5: Toolset JSON output tests ────────────────────────────────────────
+// ── Toolset JSON output tests ────────────────────────────────────────────────
 
-func TestPrintJSONToolsetDefaultHidesValue(t *testing.T) {
+func TestPrintJSONToolset(t *testing.T) {
 	findings := []Finding{
 		{
 			Name:   "MY_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project/.envrc",
-				Value: "secret",
+				Tool: "direnv",
+				File: "/project/.envrc",
 			},
 		},
 	}
@@ -693,29 +523,8 @@ func TestPrintJSONToolsetDefaultHidesValue(t *testing.T) {
 	if !strings.Contains(got, `"tool": "direnv"`) {
 		t.Errorf("expected tool=direnv in JSON; got:\n%s", got)
 	}
-	if strings.Contains(got, "secret") {
-		t.Errorf("default JSON must not reveal the value; got:\n%s", got)
-	}
-	if !strings.Contains(got, `"value": "<hidden>"`) {
-		t.Errorf("expected value=<hidden> in default JSON; got:\n%s", got)
-	}
-}
-
-func TestPrintJSONToolsetShowValue(t *testing.T) {
-	findings := []Finding{
-		{
-			Name:   "MY_VAR",
-			Origin: Toolset,
-			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project/.envrc",
-				Value: "secret",
-			},
-		},
-	}
-	got := renderJSON(t, findings, Options{ShowValue: true})
-	if !strings.Contains(got, `"value": "secret"`) {
-		t.Errorf("show-value JSON should reveal value; got:\n%s", got)
+	if strings.Contains(got, `"value"`) {
+		t.Errorf("JSON tool_source must not carry a value field; got:\n%s", got)
 	}
 }
 
@@ -725,9 +534,8 @@ func TestPrintJSONToolsetFileAlwaysSanitized(t *testing.T) {
 			Name:   "MY_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "direnv",
-				File:  "/project\x1b[31m/.envrc",
-				Value: "v",
+				Tool: "direnv",
+				File: "/project\x1b[31m/.envrc",
 			},
 		},
 	}
@@ -738,21 +546,18 @@ func TestPrintJSONToolsetFileAlwaysSanitized(t *testing.T) {
 }
 
 // TestPrintJSONToolsetMise verifies that a mise ToolSource produces
-// origin:"toolset", tool_source.tool:"mise", and hides the value by default
-// (acceptance condition 6: --json output for mise).
+// origin:"toolset", tool_source.tool:"mise", and the source file, with no value.
 func TestPrintJSONToolsetMise(t *testing.T) {
 	findings := []Finding{
 		{
 			Name:   "MY_MISE_VAR",
 			Origin: Toolset,
 			ToolSource: &ToolSource{
-				Tool:  "mise",
-				File:  "/project/mise.toml",
-				Value: "secret",
+				Tool: "mise",
+				File: "/project/mise.toml",
 			},
 		},
 	}
-	// Default: value hidden.
 	got := renderJSON(t, findings, Options{})
 	if !strings.Contains(got, `"origin": "toolset"`) {
 		t.Errorf("expected origin=toolset in JSON; got:\n%s", got)
@@ -760,19 +565,11 @@ func TestPrintJSONToolsetMise(t *testing.T) {
 	if !strings.Contains(got, `"tool": "mise"`) {
 		t.Errorf("expected tool=mise in JSON; got:\n%s", got)
 	}
-	if strings.Contains(got, "secret") {
-		t.Errorf("default JSON must not reveal the value; got:\n%s", got)
-	}
-	if !strings.Contains(got, `"value": "<hidden>"`) {
-		t.Errorf("expected value=<hidden> in default JSON; got:\n%s", got)
-	}
 	if !strings.Contains(got, `"file": "/project/mise.toml"`) {
 		t.Errorf("expected file=mise.toml in JSON; got:\n%s", got)
 	}
-	// --show-value reveals it.
-	gotShow := renderJSON(t, findings, Options{ShowValue: true})
-	if !strings.Contains(gotShow, `"value": "secret"`) {
-		t.Errorf("show-value JSON should reveal mise value; got:\n%s", gotShow)
+	if strings.Contains(got, `"value"`) {
+		t.Errorf("JSON tool_source must not carry a value field; got:\n%s", got)
 	}
 }
 
@@ -881,13 +678,6 @@ func TestSanitizeInvalidUTF8(t *testing.T) {
 	// U+FFFD is not a control character and is printable, so it passes through.
 	input := string([]byte{0xFF, 0xFE})
 	got := sanitize(input)
-	// Both 0xFF and 0xFE are decoded as U+FFFD (replacement char) — not control — pass through.
-	if strings.ContainsAny(got, "?") {
-		// This is the observed behavior: invalid UTF-8 → U+FFFD replacement char → passes through.
-		// If the implementation replaces with '?' instead, this test documents that fact.
-		t.Logf("invalid UTF-8 sanitized to %q (contains '?') — acceptable", got)
-	}
-	// Just verify no panic and output is non-empty.
 	if len(got) == 0 {
 		t.Error("sanitize of non-empty invalid UTF-8 should not return empty string")
 	}

@@ -36,7 +36,7 @@ func TestBashTracerNonLogin(t *testing.T) {
 	t.Logf("SentinelSeen: %v", result.SentinelSeen)
 	t.Logf("Events (%d):", len(result.Events))
 	for _, ev := range result.Events {
-		t.Logf("  [%d] %s  %s:%d (conf=%v) raw=%q", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf, ev.RawCode)
+		t.Logf("  [%d] %s  %s:%d (conf=%v)", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf)
 	}
 
 	if !result.SentinelSeen {
@@ -85,7 +85,7 @@ func TestBashTracerLogin(t *testing.T) {
 
 	t.Logf("Shell: %s  Mode: Login  SentinelSeen: %v", result.Shell, result.SentinelSeen)
 	for _, ev := range result.Events {
-		t.Logf("  [%d] %s  %s:%d (conf=%v) raw=%q", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf, ev.RawCode)
+		t.Logf("  [%d] %s  %s:%d (conf=%v)", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf)
 	}
 
 	if !result.SentinelSeen {
@@ -131,7 +131,7 @@ func TestBashTracerLongPathTruncation(t *testing.T) {
 
 	t.Logf("SentinelSeen: %v  Events: %d", result.SentinelSeen, len(result.Events))
 	for _, ev := range result.Events {
-		t.Logf("  [%d] %s  %s:%d (conf=%v) raw=%q", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf, ev.RawCode)
+		t.Logf("  [%d] %s  %s:%d (conf=%v)", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf)
 	}
 
 	// The event must be present with LineUnknown (truncated) and file best-effort.
@@ -145,10 +145,10 @@ func TestBashTracerLongPathTruncation(t *testing.T) {
 			if ev.File == "" {
 				t.Error("expected non-empty File for truncated event")
 			}
-			if ev.RawCode == "" {
-				t.Error("expected non-empty RawCode recovered via salvage")
-			}
-			t.Logf("PASS: truncated event recovered: file=%q rawCode=%q conf=%v", ev.File, ev.RawCode, ev.LineConf)
+			// The variable name itself is recovered from the salvaged (but
+			// discarded) rawCode; finding the event with the right name is the
+			// salvage success signal now that the value is never retained.
+			t.Logf("PASS: truncated event recovered: file=%q conf=%v", ev.File, ev.LineConf)
 		}
 	}
 	if !found {

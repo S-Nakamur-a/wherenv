@@ -7,13 +7,14 @@ import (
 	"github.com/S-Nakamur-a/wherenv/internal/tracer"
 )
 
-func makeEvent(name, file string, line int, rawCode string, append_ bool, order int) tracer.AssignEvent {
+// makeEvent keeps a rawCode parameter for call-site readability, but the value
+// is intentionally not stored: AssignEvent no longer carries it.
+func makeEvent(name, file string, line int, _ string, append_ bool, order int) tracer.AssignEvent {
 	return tracer.AssignEvent{
 		Name:     name,
 		File:     file,
 		Line:     line,
 		LineConf: tracer.LineExact,
-		RawCode:  rawCode,
 		Append:   append_,
 		Order:    order,
 	}

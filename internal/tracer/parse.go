@@ -6,7 +6,7 @@ import (
 	"strings"
 )
 
-// assignRE matches common shell assignment forms in a PS4 RawCode line.
+// assignRE matches common shell assignment forms in a PS4 raw code line.
 // Groups: 1=optional prefix keyword, 2=variable name, 3=operator (= or +=).
 var assignRE = regexp.MustCompile(
 	`^(?:export |typeset -x |declare -x )?([A-Za-z_][A-Za-z0-9_]*)(\+?=)`,
@@ -82,7 +82,9 @@ func parseTrace(raw string, keys map[string]struct{}, nonce string) (events []As
 			continue
 		}
 
-		// Step 5: extract variable name from rawCode.
+		// Step 5: extract variable name from rawCode. After this point we keep
+		// only the name and the append flag — rawCode (which carries the value)
+		// is never stored in the event, so the value is dropped immediately.
 		name, isAppend := extractVarName(rawCode)
 		if name == "" {
 			continue
@@ -105,7 +107,6 @@ func parseTrace(raw string, keys map[string]struct{}, nonce string) (events []As
 			File:     file,
 			Line:     lineNum,
 			LineConf: lineConf,
-			RawCode:  rawCode,
 			Append:   isAppend,
 			Order:    order,
 		})

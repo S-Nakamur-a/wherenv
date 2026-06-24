@@ -66,7 +66,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/etc/zshrc", "42", "FOO=bar", n),
 			keys: mkKeys("FOO"),
 			wantEvents: []AssignEvent{
-				{Name: "FOO", File: "/etc/zshrc", Line: 42, LineConf: LineExact, RawCode: "FOO=bar", Append: false, Order: 0},
+				{Name: "FOO", File: "/etc/zshrc", Line: 42, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -74,7 +74,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/etc/profile", "10", "export PATH=/usr/bin", n),
 			keys: mkKeys("PATH"),
 			wantEvents: []AssignEvent{
-				{Name: "PATH", File: "/etc/profile", Line: 10, LineConf: LineExact, RawCode: "export PATH=/usr/bin", Append: false, Order: 0},
+				{Name: "PATH", File: "/etc/profile", Line: 10, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -82,7 +82,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/home/user/.zshrc", "7", "PATH+=/extra/bin", n),
 			keys: mkKeys("PATH"),
 			wantEvents: []AssignEvent{
-				{Name: "PATH", File: "/home/user/.zshrc", Line: 7, LineConf: LineExact, RawCode: "PATH+=/extra/bin", Append: true, Order: 0},
+				{Name: "PATH", File: "/home/user/.zshrc", Line: 7, LineConf: LineExact, Append: true, Order: 0},
 			},
 		},
 		{
@@ -104,7 +104,7 @@ func TestParseTrace(t *testing.T) {
 			wantEvents: []AssignEvent{
 				// File will be "/etc/zshrc:15 " (whatever precedes "FOO="), Line=0
 				// because the "file" segment has no parseable trailing :<digit>.
-				{Name: "FOO", File: "/etc/zshrc:15 ", Line: 0, LineConf: LineUnknown, RawCode: "FOO=hello", Append: false, Order: 0},
+				{Name: "FOO", File: "/etc/zshrc:15 ", Line: 0, LineConf: LineUnknown, Append: false, Order: 0},
 			},
 		},
 		{
@@ -115,7 +115,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildBash32TruncatedLine("/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", "7", "export WHERENV_LONG=x", n, 99),
 			keys: mkKeys("WHERENV_LONG"),
 			wantEvents: []AssignEvent{
-				{Name: "WHERENV_LONG", File: "/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", Line: 7, LineConf: LineUnknown, RawCode: "export WHERENV_LONG=x", Append: false, Order: 0},
+				{Name: "WHERENV_LONG", File: "/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", Line: 7, LineConf: LineUnknown, Append: false, Order: 0},
 			},
 		},
 		{
@@ -126,7 +126,7 @@ func TestParseTrace(t *testing.T) {
 				buildBash32TruncatedLine("/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", "7", "WHERENV_LONG=x", n, 99),
 			keys: mkKeys("WHERENV_LONG"),
 			wantEvents: []AssignEvent{
-				{Name: "WHERENV_LONG", File: "/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", Line: 7, LineConf: LineUnknown, RawCode: "export WHERENV_LONG=x", Append: false, Order: 0},
+				{Name: "WHERENV_LONG", File: "/a/b/c/d/e/f/g/home/user/.bashrc_very_long_path", Line: 7, LineConf: LineUnknown, Append: false, Order: 0},
 			},
 		},
 		{
@@ -142,7 +142,7 @@ func TestParseTrace(t *testing.T) {
 			keys: mkKeys("FOO"),
 			// Step 7: same (file, line, name) → only one event.
 			wantEvents: []AssignEvent{
-				{Name: "FOO", File: "/etc/profile", Line: 3, LineConf: LineExact, RawCode: "export FOO=x", Append: false, Order: 0},
+				{Name: "FOO", File: "/etc/profile", Line: 3, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -153,7 +153,7 @@ func TestParseTrace(t *testing.T) {
 			keys:         mkKeys("FOO"),
 			wantSentinel: true,
 			wantEvents: []AssignEvent{
-				{Name: "FOO", File: "/etc/zshrc", Line: 1, LineConf: LineExact, RawCode: "FOO=before", Append: false, Order: 0},
+				{Name: "FOO", File: "/etc/zshrc", Line: 1, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -163,8 +163,8 @@ func TestParseTrace(t *testing.T) {
 			keys:         mkKeys("BAR", "QUX"),
 			wantSentinel: false,
 			wantEvents: []AssignEvent{
-				{Name: "BAR", File: "/etc/zshrc", Line: 5, LineConf: LineExact, RawCode: "BAR=baz", Append: false, Order: 0},
-				{Name: "QUX", File: "/etc/zshrc", Line: 6, LineConf: LineExact, RawCode: "QUX=qux", Append: false, Order: 1},
+				{Name: "BAR", File: "/etc/zshrc", Line: 5, LineConf: LineExact, Append: false, Order: 0},
+				{Name: "QUX", File: "/etc/zshrc", Line: 6, LineConf: LineExact, Append: false, Order: 1},
 			},
 		},
 		{
@@ -172,7 +172,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(3, "/usr/local/etc/zshrc", "100", "MYVAR=1", n),
 			keys: mkKeys("MYVAR"),
 			wantEvents: []AssignEvent{
-				{Name: "MYVAR", File: "/usr/local/etc/zshrc", Line: 100, LineConf: LineExact, RawCode: "MYVAR=1", Append: false, Order: 0},
+				{Name: "MYVAR", File: "/usr/local/etc/zshrc", Line: 100, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -180,7 +180,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/etc/zsh/zprofile", "20", "typeset -x GOPATH=/go", n),
 			keys: mkKeys("GOPATH"),
 			wantEvents: []AssignEvent{
-				{Name: "GOPATH", File: "/etc/zsh/zprofile", Line: 20, LineConf: LineExact, RawCode: "typeset -x GOPATH=/go", Append: false, Order: 0},
+				{Name: "GOPATH", File: "/etc/zsh/zprofile", Line: 20, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -188,7 +188,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/etc/bash.bashrc", "8", "declare -x HOME=/root", n),
 			keys: mkKeys("HOME"),
 			wantEvents: []AssignEvent{
-				{Name: "HOME", File: "/etc/bash.bashrc", Line: 8, LineConf: LineExact, RawCode: "declare -x HOME=/root", Append: false, Order: 0},
+				{Name: "HOME", File: "/etc/bash.bashrc", Line: 8, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -196,7 +196,7 @@ func TestParseTrace(t *testing.T) {
 			raw:  buildLine(1, "/etc/zshrc", "33", "export MYVAR", n),
 			keys: mkKeys("MYVAR"),
 			wantEvents: []AssignEvent{
-				{Name: "MYVAR", File: "/etc/zshrc", Line: 33, LineConf: LineExact, RawCode: "export MYVAR", Append: false, Order: 0},
+				{Name: "MYVAR", File: "/etc/zshrc", Line: 33, LineConf: LineExact, Append: false, Order: 0},
 			},
 		},
 		{
@@ -220,7 +220,7 @@ func TestParseTrace(t *testing.T) {
 			keys: mkKeys("FOO"),
 			// salvage produces 1 event with wrong rawCode ("FOO=dir/...") not "FOO=realval".
 			wantEvents: []AssignEvent{
-				{Name: "FOO", File: "/home/user/", Line: 0, LineConf: LineUnknown, RawCode: "FOO=dir/.zshrc:10 FOO=realval", Append: false, Order: 0},
+				{Name: "FOO", File: "/home/user/", Line: 0, LineConf: LineUnknown, Append: false, Order: 0},
 			},
 		},
 		{
@@ -230,10 +230,10 @@ func TestParseTrace(t *testing.T) {
 				buildLine(1, "/etc/zshrc", "3", "A=3", n),
 			keys: mkKeys("A", "B"),
 			wantEvents: []AssignEvent{
-				{Name: "A", File: "/etc/zshrc", Line: 1, LineConf: LineExact, RawCode: "A=1", Append: false, Order: 0},
-				{Name: "B", File: "/etc/zshrc", Line: 2, LineConf: LineExact, RawCode: "B=2", Append: false, Order: 1},
+				{Name: "A", File: "/etc/zshrc", Line: 1, LineConf: LineExact, Append: false, Order: 0},
+				{Name: "B", File: "/etc/zshrc", Line: 2, LineConf: LineExact, Append: false, Order: 1},
 				// Same name A but different line, so NOT a duplicate.
-				{Name: "A", File: "/etc/zshrc", Line: 3, LineConf: LineExact, RawCode: "A=3", Append: false, Order: 2},
+				{Name: "A", File: "/etc/zshrc", Line: 3, LineConf: LineExact, Append: false, Order: 2},
 			},
 		},
 	}
@@ -265,9 +265,6 @@ func TestParseTrace(t *testing.T) {
 				}
 				if got.LineConf != want.LineConf {
 					t.Errorf("[%d] LineConf: got %v want %v", i, got.LineConf, want.LineConf)
-				}
-				if got.RawCode != want.RawCode {
-					t.Errorf("[%d] RawCode: got %q want %q", i, got.RawCode, want.RawCode)
 				}
 				if got.Append != want.Append {
 					t.Errorf("[%d] Append: got %v want %v", i, got.Append, want.Append)

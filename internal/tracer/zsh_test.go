@@ -38,7 +38,7 @@ func TestZshTracerNonLogin(t *testing.T) {
 	t.Logf("SentinelSeen: %v", result.SentinelSeen)
 	t.Logf("Events (%d):", len(result.Events))
 	for _, ev := range result.Events {
-		t.Logf("  [%d] %s  %s:%d (conf=%v append=%v) raw=%q", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf, ev.Append, ev.RawCode)
+		t.Logf("  [%d] %s  %s:%d (conf=%v append=%v)", ev.Order, ev.Name, ev.File, ev.Line, ev.LineConf, ev.Append)
 	}
 
 	// Assertions for non-login mode.
@@ -75,7 +75,7 @@ func TestZshTracerLogin(t *testing.T) {
 
 	t.Logf("Shell: %s  Mode: Login  SentinelSeen: %v", result.Shell, result.SentinelSeen)
 	for _, ev := range result.Events {
-		t.Logf("  [%d] %s  %s:%d raw=%q", ev.Order, ev.Name, ev.File, ev.Line, ev.RawCode)
+		t.Logf("  [%d] %s  %s:%d", ev.Order, ev.Name, ev.File, ev.Line)
 	}
 
 	if !result.SentinelSeen {
