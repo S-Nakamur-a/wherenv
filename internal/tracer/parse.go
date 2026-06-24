@@ -6,15 +6,43 @@ import (
 	"strings"
 )
 
-// assignRE matches common shell assignment forms in a PS4 raw code line.
-// Groups: 1=optional prefix keyword, 2=variable name, 3=operator (= or +=).
+// assignRE matches common shell assignment forms in a PS4 raw code line that
+// place a variable into the environment. Groups: 1=variable name, 2=operator
+// (= or +=).
+//
+// The prefix alternation covers the export-affecting declaration forms:
+//
+//   - export, with any short/long flags and an optional `--`:
+//     `export FOO=`, `export -p FOO=`, `export -- FOO=`.
+//   - typeset/declare/local/readonly *with* an export flag (a flag cluster
+//     containing `x`): `typeset -x`, `typeset -gx`, `declare -gx`,
+//     `readonly -x`, `local -x`. Plain `typeset FOO=` (no -x) does not export,
+//     so it is intentionally not matched here.
+//
+// A plain `FOO=`/`FOO+=` with no prefix is still matched (the prefix group is
+// optional); the keys-set filter in parseTrace is the safety net that keeps a
+// broadened match from over-attributing.
+//
+// The optional ['"]? before the name handles the quoted form xtrace emits when
+// the assignment word came from a quoted expansion, e.g. `export "$k=$v"` is
+// traced as `export 'AWS_PROFILE=myprofile'` (zsh) — the whole word, including
+// the name, is single-quoted. Without this, envsource-style loaders that build
+// `export "$key=$value"` produce no matching event and the variable is reported
+// as "not set by any startup file".
 var assignRE = regexp.MustCompile(
-	`^(?:export |typeset -x |declare -x )?([A-Za-z_][A-Za-z0-9_]*)(\+?=)`,
+	`^(?:` +
+		`export(?:[ \t]+-{1,2}[A-Za-z]+)*(?:[ \t]+--)?[ \t]+` +
+		`|` +
+		`(?:typeset|declare|local|readonly)(?:[ \t]+-{1,2}[A-Za-z]+)*[ \t]+-{1,2}[A-Za-z]*x[A-Za-z]*(?:[ \t]+-{1,2}[A-Za-z]+)*(?:[ \t]+--)?[ \t]+` +
+		`)?` +
+		`['"]?([A-Za-z_][A-Za-z0-9_]*)(\+?=)`,
 )
 
-// exportValuelessRE matches a bare `export NAME` without `=`.
+// exportValuelessRE matches a bare `export NAME` without `=`, allowing flags,
+// `--`, and an optional surrounding quote (`export -x 'NAME'`) for the same
+// reasons assignRE does.
 var exportValuelessRE = regexp.MustCompile(
-	`^export ([A-Za-z_][A-Za-z0-9_]*)$`,
+	`^export(?:[ \t]+-{1,2}[A-Za-z]+)*(?:[ \t]+--)?[ \t]+['"]?([A-Za-z_][A-Za-z0-9_]*)['"]?$`,
 )
 
 // parseTrace parses the stderr output of one shell spawn into a list of
@@ -30,6 +58,15 @@ func parseTrace(raw string, keys map[string]struct{}, nonce string) (events []As
 	openTag := "<WE" + nonce + ">"
 	closeTag := "<EOWE" + nonce + ">"
 	sentinel := "__WHERENV_END_" + nonce + "__"
+
+	// Optional "via" block, emitted only by the zsh tracer when prompt_subst is
+	// active. Layout: <WV n>%N<WK n>funcfiletrace[1]<EOWV n> prepended before the
+	// <WE n> block. %N is the name of the currently executing unit (a function
+	// name when inside a function, the file path at a script's top level);
+	// funcfiletrace[1] is "callerfile:callerline". bash never emits this block.
+	viaOpen := "<WV" + nonce + ">"
+	viaSep := "<WK" + nonce + ">"
+	viaClose := "<EOWV" + nonce + ">"
 
 	// seen tracks (file, line, name) triples to deduplicate bash double-output (step 7).
 	type key3 struct{ file string; line int; name string }
@@ -47,8 +84,20 @@ func parseTrace(raw string, keys map[string]struct{}, nonce string) (events []As
 		// Step 1: strip leading `+` characters (xtrace nesting markers).
 		stripped := strings.TrimLeft(line, "+")
 
-		// Step 2: locate <WE<n>> — must appear at the row start (after '+' stripping)
-		// per S3 design: the nonce marker is always the first token on a xtrace line.
+		// Step 1b: consume the optional <WV>…<EOWV> via block (zsh only). Capture
+		// the frame name (%N) and the caller location; the assignment block (<WE>…)
+		// follows immediately after. If prompt_subst was off the funcfiletrace
+		// expansion stays literal ("${funcfiletrace[1]}") and is discarded later.
+		var frameName, callerLoc string
+		if rest, ok := strings.CutPrefix(stripped, viaOpen); ok {
+			if vseg, after, closed := strings.Cut(rest, viaClose); closed {
+				frameName, callerLoc, _ = strings.Cut(vseg, viaSep)
+				stripped = after
+			}
+		}
+
+		// Step 2: locate <WE<n>> — must appear at the row start (after '+' stripping
+		// and any via block) per S3 design: the nonce marker is the first token.
 		if !strings.HasPrefix(stripped, openTag) {
 			// Not a xtrace line with our marker; skip.
 			continue
@@ -102,18 +151,57 @@ func parseTrace(raw string, keys map[string]struct{}, nonce string) (events []As
 		}
 		seen[k3] = struct{}{}
 
+		// Derive the caller location. We only surface it when the assignment ran
+		// inside a function (or eval): the discriminator is %N != %x, i.e. the
+		// frame name differs from the assignment's file. For a top-level
+		// assignment in a sourced file %N == %x and funcfiletrace[1] merely points
+		// at the `source` site, which is noise — so we drop it there.
+		callerFile, callerLine := resolveCaller(frameName, file, callerLoc)
+
 		events = append(events, AssignEvent{
-			Name:     name,
-			File:     file,
-			Line:     lineNum,
-			LineConf: lineConf,
-			Append:   isAppend,
-			Order:    order,
+			Name:       name,
+			File:       file,
+			Line:       lineNum,
+			LineConf:   lineConf,
+			Append:     isAppend,
+			Order:      order,
+			CallerFile: callerFile,
+			CallerLine: callerLine,
 		})
 		order++
 	}
 
 	return events, sentinelSeen
+}
+
+// resolveCaller decides whether to surface a caller location for an assignment.
+//
+// frameName is zsh's %N (the executing unit's name), file is the assignment's
+// own file (%x), and callerLoc is funcfiletrace[1] ("callerfile:callerline").
+//
+// It returns a non-empty CallerFile only when:
+//   - a via block was present (frameName/callerLoc non-empty), and
+//   - the frame is a function/eval rather than a sourced file's top level
+//     (frameName != file), and
+//   - callerLoc is a real, fully-expanded "file:line" (prompt_subst was on, so
+//     it is not the literal "${funcfiletrace[1]}", and it parses to line > 0).
+func resolveCaller(frameName, file, callerLoc string) (callerFile string, callerLine int) {
+	if frameName == "" || callerLoc == "" {
+		return "", 0
+	}
+	if frameName == file {
+		// Top level of a sourced script: funcfiletrace[1] is just the source site.
+		return "", 0
+	}
+	if strings.Contains(callerLoc, "$") {
+		// prompt_subst was off; the expansion stayed literal.
+		return "", 0
+	}
+	cf, cl := splitFileLine(callerLoc)
+	if cf == "" || cl <= 0 {
+		return "", 0
+	}
+	return cf, cl
 }
 
 // splitFileLine splits "file:line" on the last ':' and returns (file, lineNum).
@@ -182,12 +270,17 @@ func salvageTruncated(afterOpen, nonce string, keys map[string]struct{}) (file s
 	// without the full PS4 line. Such paths are extremely rare in practice.
 	bestPos := -1
 	for key := range keys {
-		// Patterns to look for at the code boundary.
+		// Patterns to look for at the code boundary. Quoted variants cover the
+		// `export 'KEY=value'` form emitted for quoted-expansion assignments.
 		patterns := []string{
 			"export " + key + "=",
+			"export '" + key + "=", // quoted: export 'KEY=value'
+			"export \"" + key + "=",
 			"export " + key + " ",  // valueless export: "export KEY" + next token
 			"export " + key + "\n",
 			"export " + key,        // export at end of string
+			"'" + key + "=",        // quoted assignment without export prefix
+			"\"" + key + "=",
 			key + "+=",
 			key + "=",
 		}

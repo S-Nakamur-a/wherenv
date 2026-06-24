@@ -32,6 +32,15 @@ type AssignmentSite struct {
 	Append       bool
 	Modes        []tracer.Mode // modes in which this site was observed
 	ShellVersion string        // version string from the shell that produced this site
+
+	// CallerFile/CallerLine point at the line that *invoked* the function which
+	// performed this assignment, when File/Line fall inside a generic helper
+	// (e.g. an envsource-style loader) rather than a file the user edits
+	// directly. Empty when the assignment ran directly in a startup file. This is
+	// the actionable "which file really set this" location; File/Line remain the
+	// precise mechanism. Currently populated by the zsh tracer only.
+	CallerFile string
+	CallerLine int
 }
 
 // Verdict describes the winner (last effective assignment) for a Startup variable.

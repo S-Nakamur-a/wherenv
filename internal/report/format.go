@@ -70,6 +70,11 @@ type jsonSite struct {
 	Confidence string   `json:"line_confidence"`
 	Append     bool     `json:"append,omitempty"`
 	Modes      []string `json:"modes"`
+	// CallerFile/CallerLine are populated when the assignment ran inside a helper
+	// function; they point at the call site (the file the user edits), while
+	// File/Line point at the helper that performed the export.
+	CallerFile string `json:"caller_file,omitempty"`
+	CallerLine int    `json:"caller_line,omitempty"`
 }
 
 type jsonVerdict struct {
@@ -124,6 +129,10 @@ func siteToJSON(s AssignmentSite) jsonSite {
 		Confidence: confidenceString(s.LineConf),
 		Append:     s.Append,
 	}
+	if s.CallerFile != "" {
+		js.CallerFile = sanitize(s.CallerFile)
+		js.CallerLine = s.CallerLine
+	}
 	for _, m := range s.Modes {
 		js.Modes = append(js.Modes, modeString(m))
 	}
@@ -148,6 +157,13 @@ func siteToJSON(s AssignmentSite) jsonSite {
 //	                     tool=<name>    the tool that set a toolset variable
 //	                     launchd        inherited from the macOS launchd session
 //	                     incomplete     the startup trace ended before its sentinel
+//	8 caller_file      when the assignment ran inside a helper function, the file
+//	                     that called it (the line you edit); empty for a direct
+//	                     assignment. Columns 3/4 stay the precise mechanism.
+//	9 caller_line      1-based line in caller_file (empty when not applicable)
+//
+// caller_file/caller_line are their own columns rather than an attrs token
+// because a file path may contain a comma, which would break attrs parsing.
 //
 // A Startup variable emits one line per assignment site (so callers can grep by
 // file or cut the line number); every other origin emits exactly one line.
@@ -166,7 +182,7 @@ func printTSVFinding(w io.Writer, f Finding) error {
 	case Startup:
 		if len(f.Sites) == 0 {
 			// Defensive: a Startup finding should carry sites, but never drop it.
-			return tsvLine(w, f.Name, origin, "", "", "", "", startupBaseAttrs(f, nil))
+			return tsvLine(w, f.Name, origin, "", "", "", "", startupBaseAttrs(f, nil), "", "")
 		}
 		for _, s := range f.Sites {
 			file := tsvField(s.File)
@@ -176,7 +192,8 @@ func printTSVFinding(w io.Writer, f Finding) error {
 			}
 			conf := confidenceString(s.LineConf)
 			modes := formatModes(s.Modes)
-			if err := tsvLine(w, f.Name, origin, file, line, conf, modes, startupBaseAttrs(f, &s)); err != nil {
+			callerFile, callerLine := tsvCaller(s)
+			if err := tsvLine(w, f.Name, origin, file, line, conf, modes, startupBaseAttrs(f, &s), callerFile, callerLine); err != nil {
 				return err
 			}
 		}
@@ -191,7 +208,7 @@ func printTSVFinding(w io.Writer, f Finding) error {
 		if f.SentinelMissing {
 			attrs = append(attrs, "incomplete")
 		}
-		return tsvLine(w, f.Name, origin, file, "", "", "", attrs)
+		return tsvLine(w, f.Name, origin, file, "", "", "", attrs, "", "")
 	case Inherited:
 		attrs := []string{}
 		if f.InheritedFromLaunchd {
@@ -200,10 +217,23 @@ func printTSVFinding(w io.Writer, f Finding) error {
 		if f.SentinelMissing {
 			attrs = append(attrs, "incomplete")
 		}
-		return tsvLine(w, f.Name, origin, "", "", "", "", attrs)
+		return tsvLine(w, f.Name, origin, "", "", "", "", attrs, "", "")
 	default: // Unset
-		return tsvLine(w, f.Name, origin, "", "", "", "", nil)
+		return tsvLine(w, f.Name, origin, "", "", "", "", nil, "", "")
 	}
+}
+
+// tsvCaller returns the caller_file/caller_line column values for a site,
+// empty when the assignment ran directly (no helper indirection).
+func tsvCaller(s AssignmentSite) (callerFile, callerLine string) {
+	if s.CallerFile == "" {
+		return "", ""
+	}
+	cl := ""
+	if s.CallerLine > 0 {
+		cl = strconv.Itoa(s.CallerLine)
+	}
+	return tsvField(s.CallerFile), cl
 }
 
 // startupBaseAttrs builds the attrs tokens for a Startup site: any winner=<mode>
@@ -229,10 +259,10 @@ func startupBaseAttrs(f Finding, site *AssignmentSite) []string {
 }
 
 // tsvLine writes one tab-separated record terminated by '\n'. attrs are joined
-// with commas into the final column.
-func tsvLine(w io.Writer, name, origin, file, line, conf, modes string, attrs []string) error {
-	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
-		name, origin, file, line, conf, modes, strings.Join(attrs, ","))
+// with commas into column 7; caller_file/caller_line are columns 8/9.
+func tsvLine(w io.Writer, name, origin, file, line, conf, modes string, attrs []string, callerFile, callerLine string) error {
+	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		name, origin, file, line, conf, modes, strings.Join(attrs, ","), callerFile, callerLine)
 	return err
 }
 
@@ -314,20 +344,35 @@ func printStartupStack(w io.Writer, f Finding, pal palette) error {
 	// Most-recent first: reverse of execution order.
 	for i := n - 1; i >= 0; i-- {
 		s := f.Sites[i]
-		fileLine := formatFileLine(s)
+		loc, via := siteLoc(s, pal)
 		conf := formatConfidence(s.LineConf, s.ShellVersion)
 		last := n > 1 && haveWin && s.File == winFile && s.Line == winLine
 
 		switch {
 		case n == 1:
-			fmt.Fprintf(w, "  %s%s\n", pal.loc(fileLine), pal.dim(conf))
+			fmt.Fprintf(w, "  %s%s%s\n", pal.loc(loc), pal.dim(conf), via)
 		case last:
-			fmt.Fprintf(w, "  %s %s%s   %s\n", pal.dim("→"), pal.winner(fileLine), pal.dim(conf), pal.dim("← ran last"))
+			fmt.Fprintf(w, "  %s %s%s%s   %s\n", pal.dim("→"), pal.winner(loc), pal.dim(conf), via, pal.dim("← ran last"))
 		default:
-			fmt.Fprintf(w, "    %s%s\n", pal.loc(fileLine), pal.dim(conf))
+			fmt.Fprintf(w, "    %s%s%s\n", pal.loc(loc), pal.dim(conf), via)
 		}
 	}
 	return nil
+}
+
+// siteLoc returns the primary location string to display for a site and an
+// optional " (via …)" suffix. When the site carries a caller location (the
+// assignment ran inside a helper function), the caller line — the file the user
+// actually edits — becomes primary and the mechanism (the helper's own
+// file:line) is demoted to the via note. Without a caller, the site's own
+// file:line is shown as before.
+func siteLoc(s AssignmentSite, pal palette) (loc, via string) {
+	if s.CallerFile != "" {
+		loc = fmt.Sprintf("%s:%d", sanitize(s.CallerFile), s.CallerLine)
+		via = "  " + pal.dim("(via "+formatFileLine(s)+")")
+		return loc, via
+	}
+	return formatFileLine(s), ""
 }
 
 // printStartupByMode renders the --mode both view: each site tagged with the
@@ -339,10 +384,10 @@ func printStartupByMode(w io.Writer, f Finding, pal palette) error {
 	}
 
 	for _, s := range f.Sites {
-		fileLine := formatFileLine(s)
+		loc, via := siteLoc(s, pal)
 		modes := formatModes(s.Modes)
 		conf := formatConfidence(s.LineConf, s.ShellVersion)
-		fmt.Fprintf(w, "  %s %s%s\n", pal.loc(fileLine), pal.dim("["+modes+"]"), pal.dim(conf))
+		fmt.Fprintf(w, "  %s %s%s%s\n", pal.loc(loc), pal.dim("["+modes+"]"), pal.dim(conf), via)
 		if s.Append {
 			fmt.Fprintln(w, pal.dim("    (appends with +=)"))
 		}
@@ -355,14 +400,14 @@ func printStartupByMode(w io.Writer, f Finding, pal palette) error {
 			if !ok {
 				continue
 			}
-			fileLine := formatFileLine(*site)
+			loc, via := siteLoc(*site, pal)
 			conf := formatConfidence(site.LineConf, site.ShellVersion)
 			appendNote := ""
 			if site.Append {
 				appendNote = " (+=)"
 			}
 			// Tab after the mode tag so file:line aligns across [login]/[non-login].
-			fmt.Fprintf(w, "    [%s]\t%s%s%s\n", modeString(mode), pal.winner(fileLine), pal.dim(conf), appendNote)
+			fmt.Fprintf(w, "    [%s]\t%s%s%s%s\n", modeString(mode), pal.winner(loc), pal.dim(conf), appendNote, via)
 		}
 		if f.Verdict.HasAppend {
 			fmt.Fprintln(w, pal.dim("    (chain includes += assignments)"))

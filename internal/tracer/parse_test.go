@@ -25,6 +25,17 @@ func buildLine(plusCount int, file string, lineNum string, rawCode string, nonce
 	return plus + "<WE" + nonce + ">" + file + ":" + lineNum + "<EOWE" + nonce + "> " + rawCode
 }
 
+// buildViaLine builds an xtrace line that carries the optional zsh "via" block
+// (<WV>frameName<WK>callerLoc<EOWV>) before the <WE> assignment block.
+func buildViaLine(plusCount int, frameName, callerLoc, file, lineNum, rawCode, nonce string) string {
+	plus := ""
+	for i := 0; i < plusCount; i++ {
+		plus += "+"
+	}
+	via := "<WV" + nonce + ">" + frameName + "<WK" + nonce + ">" + callerLoc + "<EOWV" + nonce + ">"
+	return plus + via + "<WE" + nonce + ">" + file + ":" + lineNum + "<EOWE" + nonce + "> " + rawCode
+}
+
 // buildTruncatedLine builds a line where <EOWE> is absent (truncated by bash 3.2 or limit).
 func buildTruncatedLine(plusCount int, partial string, nonce string) string {
 	plus := ""
@@ -200,6 +211,115 @@ func TestParseTrace(t *testing.T) {
 			},
 		},
 		{
+			// Regression: envsource-style `export "$key=$value"` is traced by zsh
+			// as `export 'AWS_PROFILE=myprofile'` — the whole word is single-quoted.
+			name: "quoted export form (envsource)",
+			raw:  buildLine(2, "/Users/me/.config/zsh/functions/envsource", "17", "export 'AWS_PROFILE=myprofile'", n),
+			keys: mkKeys("AWS_PROFILE"),
+			wantEvents: []AssignEvent{
+				{Name: "AWS_PROFILE", File: "/Users/me/.config/zsh/functions/envsource", Line: 17, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "double-quoted export form",
+			raw:  buildLine(1, "/etc/zshrc", "5", `export "FOO=bar baz"`, n),
+			keys: mkKeys("FOO"),
+			wantEvents: []AssignEvent{
+				{Name: "FOO", File: "/etc/zshrc", Line: 5, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "quoted valueless export form",
+			raw:  buildLine(1, "/etc/zshrc", "9", "export 'MYVAR'", n),
+			keys: mkKeys("MYVAR"),
+			wantEvents: []AssignEvent{
+				{Name: "MYVAR", File: "/etc/zshrc", Line: 9, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "typeset combined -gx flags",
+			raw:  buildLine(1, "/etc/zshrc", "11", "typeset -gx GOPATH=/go", n),
+			keys: mkKeys("GOPATH"),
+			wantEvents: []AssignEvent{
+				{Name: "GOPATH", File: "/etc/zshrc", Line: 11, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "typeset separate -g -x flags",
+			raw:  buildLine(1, "/etc/zshrc", "12", "typeset -g -x EDITOR=vim", n),
+			keys: mkKeys("EDITOR"),
+			wantEvents: []AssignEvent{
+				{Name: "EDITOR", File: "/etc/zshrc", Line: 12, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "readonly -x form",
+			raw:  buildLine(1, "/etc/zshrc", "13", "readonly -x TZ=UTC", n),
+			keys: mkKeys("TZ"),
+			wantEvents: []AssignEvent{
+				{Name: "TZ", File: "/etc/zshrc", Line: 13, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "export -- separator",
+			raw:  buildLine(1, "/etc/zshrc", "14", "export -- LANG=C", n),
+			keys: mkKeys("LANG"),
+			wantEvents: []AssignEvent{
+				{Name: "LANG", File: "/etc/zshrc", Line: 14, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "local -x in function",
+			raw:  buildLine(2, "/home/u/.zshrc", "20", "local -x TMPVAR=x", n),
+			keys: mkKeys("TMPVAR"),
+			wantEvents: []AssignEvent{
+				{Name: "TMPVAR", File: "/home/u/.zshrc", Line: 20, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			name: "plain typeset without -x is not an export - filtered",
+			raw:  buildLine(1, "/etc/zshrc", "21", "typeset SHELLVAR=x", n),
+			keys: mkKeys("SHELLVAR"),
+			wantEvents: nil,
+		},
+		{
+			name: "variable literally named export",
+			raw:  buildLine(1, "/etc/zshrc", "22", "export=1", n),
+			keys: mkKeys("export"),
+			wantEvents: []AssignEvent{
+				{Name: "export", File: "/etc/zshrc", Line: 22, LineConf: LineExact, Append: false, Order: 0},
+			},
+		},
+		{
+			// via block, function frame (frameName != file): caller surfaced.
+			name: "via block surfaces caller for function-mediated assignment",
+			raw:  buildViaLine(1, "envsource", "/home/u/.config/zsh/conf.d/08.zsh:7", "/home/u/.config/zsh/functions/envsource", "16", "export 'AWS_PROFILE=p'", n),
+			keys: mkKeys("AWS_PROFILE"),
+			wantEvents: []AssignEvent{
+				{Name: "AWS_PROFILE", File: "/home/u/.config/zsh/functions/envsource", Line: 16, LineConf: LineExact, Order: 0,
+					CallerFile: "/home/u/.config/zsh/conf.d/08.zsh", CallerLine: 7},
+			},
+		},
+		{
+			// via block, top-level frame (frameName == file): caller is just the
+			// source site, so it is dropped.
+			name: "via block dropped for direct top-level assignment",
+			raw:  buildViaLine(1, "/home/u/.config/zsh/conf.d/08.zsh", "/home/u/.config/zsh/.zshrc:4", "/home/u/.config/zsh/conf.d/08.zsh", "3", "export DIRECT=x", n),
+			keys: mkKeys("DIRECT"),
+			wantEvents: []AssignEvent{
+				{Name: "DIRECT", File: "/home/u/.config/zsh/conf.d/08.zsh", Line: 3, LineConf: LineExact, Order: 0},
+			},
+		},
+		{
+			// prompt_subst off: funcfiletrace stays literal, caller discarded.
+			name: "via block with unexpanded funcfiletrace is ignored",
+			raw:  buildViaLine(1, "envsource", "${funcfiletrace[1]}", "/home/u/functions/envsource", "16", "export 'AWS_PROFILE=p'", n),
+			keys: mkKeys("AWS_PROFILE"),
+			wantEvents: []AssignEvent{
+				{Name: "AWS_PROFILE", File: "/home/u/functions/envsource", Line: 16, LineConf: LineExact, Order: 0},
+			},
+		},
+		{
 			name: "line without our marker is ignored",
 			raw:  "+/etc/zshrc:5 FOO=bar",
 			keys: mkKeys("FOO"),
@@ -271,6 +391,12 @@ func TestParseTrace(t *testing.T) {
 				}
 				if got.Order != want.Order {
 					t.Errorf("[%d] Order: got %d want %d", i, got.Order, want.Order)
+				}
+				if got.CallerFile != want.CallerFile {
+					t.Errorf("[%d] CallerFile: got %q want %q", i, got.CallerFile, want.CallerFile)
+				}
+				if got.CallerLine != want.CallerLine {
+					t.Errorf("[%d] CallerLine: got %d want %d", i, got.CallerLine, want.CallerLine)
 				}
 			}
 		})

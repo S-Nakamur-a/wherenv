@@ -5,6 +5,7 @@ import (
 	"maps"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -38,9 +39,16 @@ func (zshTracer) Trace(ctx context.Context, mode Mode, keys map[string]struct{},
 
 	sentinel := "__WHERENV_END_" + nonce + "__"
 
-	// PS4 format: +<WE<n>>%x:%I<EOWE<n>><space>
-	// %x = current file being executed, %I = line number in that file (S3).
-	ps4 := `+<WE` + nonce + `>%x:%I<EOWE` + nonce + `> `
+	// PS4 format: +<WV<n>>%N<WK<n>>${funcfiletrace[1]}<EOWV<n>><WE<n>>%x:%I<EOWE<n>><space>
+	//   %x = current file, %I = line number in that file (S3).
+	//   %N = name of the executing unit (function name, or file path at top level).
+	//   ${funcfiletrace[1]} = "callerfile:callerline" of the enclosing function's
+	//     call site — only expands when prompt_subst is on (enabled by the shim
+	//     below); otherwise it stays literal and parseTrace discards it.
+	// The leading via block lets parseTrace attribute function-mediated
+	// assignments (e.g. envsource) to the conf.d line that called the helper,
+	// not just to the helper's own source file.
+	ps4 := `+<WV` + nonce + `>%N<WK` + nonce + `>${funcfiletrace[1]}<EOWV` + nonce + `><WE` + nonce + `>%x:%I<EOWE` + nonce + `> `
 
 	// Use the real ZDOTDIR if set, otherwise fall back to $HOME.
 	// This ensures we trace the user's actual dotfiles.
@@ -49,10 +57,25 @@ func (zshTracer) Trace(ctx context.Context, mode Mode, keys map[string]struct{},
 		zdotdir = os.Getenv("HOME")
 	}
 
+	// prompt_subst must be on while the startup files run so the PS4
+	// ${funcfiletrace[1]} expands. zsh reads $ZDOTDIR/.zshenv first and always,
+	// so we point ZDOTDIR at a throwaway shim whose .zshenv enables the option,
+	// restores ZDOTDIR to the real directory (so .zprofile/.zshrc/.zlogin load
+	// from there), and chains the user's real .zshenv. If the shim can't be
+	// created we fall back to the real ZDOTDIR — the trace still works, only the
+	// caller attribution is lost (the literal expansion is discarded).
+	childZdotdir := zdotdir
+	if shimDir, cleanup, err := makePromptSubstShim(zdotdir); err == nil {
+		childZdotdir = shimDir
+		defer cleanup()
+	} else {
+		dbg("zsh: prompt_subst shim unavailable (%v); caller attribution disabled", err)
+	}
+
 	// Build the child environment: start from the current process env,
 	// then override ZDOTDIR and PS4.
 	childEnv := overrideEnv(os.Environ(), map[string]string{
-		"ZDOTDIR": zdotdir,
+		"ZDOTDIR": childZdotdir,
 		"PS4":     ps4,
 	})
 
@@ -109,6 +132,39 @@ func (zshTracer) Trace(ctx context.Context, mode Mode, keys map[string]struct{},
 
 	// Surface timeout as a secondary error but still return partial results.
 	return result, runErr
+}
+
+// makePromptSubstShim creates a throwaway ZDOTDIR whose .zshenv turns on
+// prompt_subst, restores ZDOTDIR to realZdotdir, and chains the user's real
+// .zshenv. It returns the shim directory and a cleanup func that removes it.
+//
+// Security: realZdotdir is single-quote escaped before being written into the
+// shim script, so a path containing shell metacharacters cannot break out of
+// the quotes. No user-controlled variable name or value is involved (S2).
+func makePromptSubstShim(realZdotdir string) (shimDir string, cleanup func(), err error) {
+	dir, err := os.MkdirTemp("", "wherenv-zdot-")
+	if err != nil {
+		return "", nil, err
+	}
+	cleanup = func() { _ = os.RemoveAll(dir) }
+
+	real := shellSingleQuote(realZdotdir)
+	content := "" +
+		"setopt prompt_subst 2>/dev/null\n" +
+		"export ZDOTDIR=" + real + "\n" +
+		"[ -f " + real + "/.zshenv ] && source " + real + "/.zshenv\n"
+
+	if err := os.WriteFile(filepath.Join(dir, ".zshenv"), []byte(content), 0o600); err != nil {
+		cleanup()
+		return "", nil, err
+	}
+	return dir, cleanup, nil
+}
+
+// shellSingleQuote wraps s in single quotes, escaping embedded single quotes so
+// the result is a single safe shell word.
+func shellSingleQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 // zshVersion returns the output of `zsh --version`, trimmed.
