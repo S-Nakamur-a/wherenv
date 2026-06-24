@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"unicode"
 
@@ -16,19 +17,29 @@ import (
 // values (they are dropped at capture time), so there is nothing to reveal.
 // The formatter only ever prints locations and provenance.
 type Options struct {
-	JSON      bool // ADR-7: emit JSON instead of text
-	Color     bool // colorize text output (never applies to JSON)
-	ShowModes bool // true when >1 mode was traced: tag sites by mode and show
-	// per-mode winners. When false (single mode) the output is a simple
-	// load-ordered list with the last/effective assignment marked.
+	JSON  bool // ADR-7: emit JSON instead of the default TSV
+	Human bool // emit the human-readable, formatted text instead of the default TSV
+	Color bool // colorize human text output (never applies to TSV or JSON)
+	// ShowModes is true when >1 mode was traced: tag sites by mode and show
+	// per-mode winners. When false (single mode) the human output is a simple
+	// load-ordered list with the last/effective assignment marked. It does not
+	// affect the TSV/JSON formats, which always carry each site's modes.
+	ShowModes bool
 }
 
-// Print writes all findings to w in text or JSON format.
+// Print writes all findings to w. The default format is machine-readable TSV
+// (one record per line, tab-separated, no decoration) so the output pipes
+// cleanly into grep/awk/cut. Opt into JSON with Options.JSON, or the
+// human-readable formatted view with Options.Human.
 func Print(w io.Writer, findings []Finding, opts Options) error {
-	if opts.JSON {
+	switch {
+	case opts.JSON:
 		return printJSON(w, findings)
+	case opts.Human:
+		return printText(w, findings, opts)
+	default:
+		return printTSV(w, findings)
 	}
-	return printText(w, findings, opts)
 }
 
 // ── JSON output ──────────────────────────────────────────────────────────────
@@ -117,6 +128,119 @@ func siteToJSON(s AssignmentSite) jsonSite {
 		js.Modes = append(js.Modes, modeString(m))
 	}
 	return js
+}
+
+// ── TSV output (default, machine-readable) ────────────────────────────────────
+
+// printTSV writes one record per line in a stable, tab-separated layout with no
+// decoration — the format meant for pipelines (grep/awk/cut). There is no header
+// row, so every line is data. Columns, in order:
+//
+//	1 name             variable name
+//	2 origin           startup | inherited | toolset | unset
+//	3 file             source file (empty when none); control chars sanitized
+//	4 line             1-based line number (empty when unknown/not applicable)
+//	5 line_confidence  exact | best-effort | unknown (empty when not applicable)
+//	6 modes            e.g. login, non-login, non-login+login (empty when N/A)
+//	7 attrs            comma-separated tokens (empty when none):
+//	                     winner=<mode>  this site is the effective last assignment for <mode>
+//	                     append         this site used += (cumulative)
+//	                     tool=<name>    the tool that set a toolset variable
+//	                     launchd        inherited from the macOS launchd session
+//	                     incomplete     the startup trace ended before its sentinel
+//
+// A Startup variable emits one line per assignment site (so callers can grep by
+// file or cut the line number); every other origin emits exactly one line.
+func printTSV(w io.Writer, findings []Finding) error {
+	for _, f := range findings {
+		if err := printTSVFinding(w, f); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func printTSVFinding(w io.Writer, f Finding) error {
+	origin := originString(f.Origin)
+	switch f.Origin {
+	case Startup:
+		if len(f.Sites) == 0 {
+			// Defensive: a Startup finding should carry sites, but never drop it.
+			return tsvLine(w, f.Name, origin, "", "", "", "", startupBaseAttrs(f, nil))
+		}
+		for _, s := range f.Sites {
+			file := tsvField(s.File)
+			line := ""
+			if s.Line > 0 {
+				line = strconv.Itoa(s.Line)
+			}
+			conf := confidenceString(s.LineConf)
+			modes := formatModes(s.Modes)
+			if err := tsvLine(w, f.Name, origin, file, line, conf, modes, startupBaseAttrs(f, &s)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case Toolset:
+		attrs := []string{}
+		file := ""
+		if f.ToolSource != nil {
+			file = tsvField(f.ToolSource.File)
+			attrs = append(attrs, "tool="+f.ToolSource.Tool)
+		}
+		if f.SentinelMissing {
+			attrs = append(attrs, "incomplete")
+		}
+		return tsvLine(w, f.Name, origin, file, "", "", "", attrs)
+	case Inherited:
+		attrs := []string{}
+		if f.InheritedFromLaunchd {
+			attrs = append(attrs, "launchd")
+		}
+		if f.SentinelMissing {
+			attrs = append(attrs, "incomplete")
+		}
+		return tsvLine(w, f.Name, origin, "", "", "", "", attrs)
+	default: // Unset
+		return tsvLine(w, f.Name, origin, "", "", "", "", nil)
+	}
+}
+
+// startupBaseAttrs builds the attrs tokens for a Startup site: any winner=<mode>
+// tags (the site is the effective last assignment for that mode), an append tag,
+// and an incomplete tag when the trace was cut short. site may be nil.
+func startupBaseAttrs(f Finding, site *AssignmentSite) []string {
+	var attrs []string
+	if site != nil {
+		for _, mode := range []tracer.Mode{tracer.NonLogin, tracer.Login} {
+			win, ok := f.Verdict.PerMode[mode]
+			if ok && win.File == site.File && win.Line == site.Line {
+				attrs = append(attrs, "winner="+modeString(mode))
+			}
+		}
+		if site.Append {
+			attrs = append(attrs, "append")
+		}
+	}
+	if f.SentinelMissing {
+		attrs = append(attrs, "incomplete")
+	}
+	return attrs
+}
+
+// tsvLine writes one tab-separated record terminated by '\n'. attrs are joined
+// with commas into the final column.
+func tsvLine(w io.Writer, name, origin, file, line, conf, modes string, attrs []string) error {
+	_, err := fmt.Fprintf(w, "%s\t%s\t%s\t%s\t%s\t%s\t%s\n",
+		name, origin, file, line, conf, modes, strings.Join(attrs, ","))
+	return err
+}
+
+// tsvField sanitizes a value for use as a TSV column: it first strips terminal
+// control characters (S7) and then neutralizes any literal tab so it cannot
+// split the record into spurious columns.
+func tsvField(s string) string {
+	return strings.ReplaceAll(sanitize(s), "\t", " ")
 }
 
 // ── Text output ───────────────────────────────────────────────────────────────

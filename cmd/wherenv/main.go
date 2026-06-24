@@ -33,12 +33,19 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	fs := flag.NewFlagSet("wherenv", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	asJSON := fs.Bool("json", false, "emit JSON output")
+	// Default output is machine-readable TSV (pipeline-friendly). --human/-H
+	// switches to the formatted, human-readable view. Note: -h is reserved by the
+	// flag package for help, so the short alias is -H.
+	var human bool
+	fs.BoolVar(&human, "human", false, "human-readable, formatted output (default is machine-readable TSV)")
+	fs.BoolVar(&human, "H", false, "alias for --human")
 	timeoutSec := fs.Float64("timeout", 8.0, "per-spawn timeout in seconds")
 	modeFlag := fs.String("mode", "login", "shell mode(s) to trace: login | non-login | both")
-	colorFlag := fs.String("color", "auto", "colorize output: auto | always | never")
+	colorFlag := fs.String("color", "auto", "colorize output: auto | always | never (human output only)")
 	fs.Usage = func() {
 		fmt.Fprintln(stderr, "usage: wherenv [flags] VARNAME [VARNAME...]")
 		fmt.Fprintln(stderr, "wherenv reports WHERE each variable was set; it never reads or prints values.")
+		fmt.Fprintln(stderr, "Default output is machine-readable TSV; use --human/-H for the formatted view.")
 		fmt.Fprintln(stderr, "WARNING: wherenv executes your real shell startup files as a side effect of tracing.")
 		fs.PrintDefaults()
 	}
@@ -169,8 +176,12 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	// ── Report ────────────────────────────────────────────────────────────────
 	opts := report.Options{
-		JSON:      *asJSON,
-		Color:     colorize,
+		JSON:  *asJSON,
+		Human: human,
+		// Color only ever applies to the human view; the TSV/JSON formats are
+		// always plain. Gate it on human so --color=always can't leak ANSI into a
+		// machine-readable stream.
+		Color:     colorize && human,
 		ShowModes: len(modes) > 1,
 	}
 	if err := report.Print(stdout, findings, opts); err != nil {
