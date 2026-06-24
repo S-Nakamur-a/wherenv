@@ -75,13 +75,46 @@ func TestRunInvalidKeyLeadingHyphen(t *testing.T) {
 	}
 }
 
-func TestRunNoArgs(t *testing.T) {
-	code, _, errOut := runCapture([]string{}, "/bin/zsh")
-	if code != 2 {
-		t.Errorf("no args: want exit 2, got %d", code)
+// TestRunNoArgsTracesAllEnv verifies the no-argument behavior: instead of
+// printing usage, wherenv traces every variable visible in the environment. We
+// point SHELL at an unsupported shell so no real shell is spawned — classification
+// falls back to env-only, and every present variable is reported as inherited.
+func TestRunNoArgsTracesAllEnv(t *testing.T) {
+	// A uniquely-named variable we control, so the assertion can't be satisfied by
+	// some unrelated entry in the test process environment.
+	t.Setenv("WHERENV_NOARGS_TEST_VAR", "x")
+
+	code, outStr, errOut := runCapture([]string{}, "/usr/local/bin/fish")
+	if code != 0 {
+		t.Fatalf("no args: want exit 0, got %d (stderr: %s)", code, errOut)
 	}
-	if !strings.Contains(errOut, "usage:") {
-		t.Errorf("expected usage message; got %q", errOut)
+	// The variable we set must appear as an inherited TSV record, proving the
+	// no-arg run enumerated and classified the whole environment.
+	if !strings.Contains(outStr, "WHERENV_NOARGS_TEST_VAR\tinherited\t") {
+		t.Errorf("expected no-arg run to trace all env vars incl. WHERENV_NOARGS_TEST_VAR; got %q", outStr)
+	}
+}
+
+// TestEnvKeysSortsAndFiltersInvalid verifies that envKeys returns only valid
+// identifiers, sorted, so the no-arg trace covers a predictable, S1-safe set.
+func TestEnvKeysSortsAndFiltersInvalid(t *testing.T) {
+	snap := map[string]string{
+		"ZED":           "",
+		"PATH":          "",
+		"alpha":         "",
+		"BASH_FUNC_x%%": "", // bash exported-function entry: not a valid identifier
+		"HAS SPACE":     "", // not a valid identifier
+		"_UNDERSCORE":   "",
+	}
+	got := envKeys(snap)
+	want := []string{"PATH", "ZED", "_UNDERSCORE", "alpha"}
+	if len(got) != len(want) {
+		t.Fatalf("envKeys: got %v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("envKeys: got %v, want %v", got, want)
+		}
 	}
 }
 
