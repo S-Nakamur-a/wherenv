@@ -35,11 +35,24 @@ func makeSite(file string, line int, _ string, append_ bool, modes ...tracer.Mod
 	}
 }
 
+// renderText exercises the human-readable formatter. The default format is now
+// TSV, so these golden tests opt in via Human: true.
 func renderText(t *testing.T, findings []Finding, opts Options) string {
 	t.Helper()
+	opts.Human = true
 	var b strings.Builder
 	if err := Print(&b, findings, opts); err != nil {
 		t.Fatalf("Print: %v", err)
+	}
+	return b.String()
+}
+
+// renderTSV exercises the default machine-readable TSV formatter.
+func renderTSV(t *testing.T, findings []Finding) string {
+	t.Helper()
+	var b strings.Builder
+	if err := Print(&b, findings, Options{}); err != nil {
+		t.Fatalf("Print TSV: %v", err)
 	}
 	return b.String()
 }
@@ -388,6 +401,145 @@ func TestPrintTextToolsetMiseNoFile(t *testing.T) {
 	}
 	if strings.Contains(got, "DIRENV") {
 		t.Errorf("mise no-file output must not mention DIRENV; got %q", got)
+	}
+}
+
+// ── TSV output golden tests (default, machine-readable) ───────────────────────
+
+func TestPrintTSVUnset(t *testing.T) {
+	findings := []Finding{{Name: "NOTEXIST", Origin: Unset}}
+	got := renderTSV(t, findings)
+	want := "NOTEXIST\tunset\t\t\t\t\t\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVInheritedNoSource(t *testing.T) {
+	findings := []Finding{{Name: "SHLVL", Origin: Inherited}}
+	got := renderTSV(t, findings)
+	want := "SHLVL\tinherited\t\t\t\t\t\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVInheritedLaunchd(t *testing.T) {
+	findings := []Finding{{Name: "TERM", Origin: Inherited, InheritedFromLaunchd: true}}
+	got := renderTSV(t, findings)
+	want := "TERM\tinherited\t\t\t\t\tlaunchd\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVInheritedSentinelMissing(t *testing.T) {
+	findings := []Finding{{Name: "FOO", Origin: Inherited, SentinelMissing: true}}
+	got := renderTSV(t, findings)
+	want := "FOO\tinherited\t\t\t\t\tincomplete\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVStartupSingleSiteWinner(t *testing.T) {
+	winner := &AssignmentSite{File: "/etc/zshrc", Line: 5, LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.NonLogin}}
+	findings := []Finding{
+		makeStartupFinding("FOO",
+			[]AssignmentSite{makeSite("/etc/zshrc", 5, "export FOO=x", false, tracer.NonLogin)},
+			map[tracer.Mode]*AssignmentSite{tracer.NonLogin: winner},
+			false, false),
+	}
+	got := renderTSV(t, findings)
+	want := "FOO\tstartup\t/etc/zshrc\t5\texact\tnon-login\twinner=non-login\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVStartupMultiSite(t *testing.T) {
+	// Three sites; the last (in execution order) is the winner. One line per site,
+	// in execution order, so callers can grep by file / cut the line number.
+	winner := &AssignmentSite{File: "/c.zsh", Line: 21, LineConf: tracer.LineExact, Modes: []tracer.Mode{tracer.Login}}
+	findings := []Finding{
+		makeStartupFinding("PATH",
+			[]AssignmentSite{
+				makeSite("/a.zsh", 3, "export PATH=/a", false, tracer.Login),
+				makeSite("/b.zsh", 88, "export PATH=/a:/b", false, tracer.Login),
+				makeSite("/c.zsh", 21, "export PATH=/a:/b:/c", false, tracer.Login),
+			},
+			map[tracer.Mode]*AssignmentSite{tracer.Login: winner},
+			false, false),
+	}
+	got := renderTSV(t, findings)
+	want := "PATH\tstartup\t/a.zsh\t3\texact\tlogin\t\n" +
+		"PATH\tstartup\t/b.zsh\t88\texact\tlogin\t\n" +
+		"PATH\tstartup\t/c.zsh\t21\texact\tlogin\twinner=login\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVStartupAppendAndModes(t *testing.T) {
+	appendSite := makeSite("/home/u/.zshrc", 10, "PATH+=/extra", true, tracer.NonLogin, tracer.Login)
+	winner := &AssignmentSite{File: "/home/u/.zshrc", Line: 10, LineConf: tracer.LineExact, Append: true, Modes: []tracer.Mode{tracer.NonLogin}}
+	findings := []Finding{
+		makeStartupFinding("PATH",
+			[]AssignmentSite{appendSite},
+			map[tracer.Mode]*AssignmentSite{tracer.NonLogin: winner},
+			true, false),
+	}
+	got := renderTSV(t, findings)
+	want := "PATH\tstartup\t/home/u/.zshrc\t10\texact\tnon-login+login\twinner=non-login,append\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+func TestPrintTSVToolset(t *testing.T) {
+	findings := []Finding{
+		{Name: "MY_VAR", Origin: Toolset, ToolSource: &ToolSource{Tool: "direnv", File: "/proj/.envrc"}},
+	}
+	got := renderTSV(t, findings)
+	want := "MY_VAR\ttoolset\t/proj/.envrc\t\t\t\ttool=direnv\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+}
+
+// TestPrintTSVFieldsAreTabSafe verifies a tab embedded in a file path can never
+// split a record into spurious columns: it is neutralized to a space.
+func TestPrintTSVFieldsAreTabSafe(t *testing.T) {
+	findings := []Finding{
+		{Name: "MY_VAR", Origin: Toolset, ToolSource: &ToolSource{Tool: "direnv", File: "/proj\tevil/.envrc"}},
+	}
+	got := renderTSV(t, findings)
+	want := "MY_VAR\ttoolset\t/proj evil/.envrc\t\t\t\ttool=direnv\n"
+	if got != want {
+		t.Errorf("got:\n%q\nwant:\n%q", got, want)
+	}
+	// Exactly 6 tabs → 7 columns, regardless of the path content.
+	if n := strings.Count(strings.TrimRight(got, "\n"), "\t"); n != 6 {
+		t.Errorf("expected 6 tab separators (7 columns), got %d in %q", n, got)
+	}
+}
+
+// TestPrintTSVNeverShowsValue is a regression fence: even built from a
+// "SECRET=hunter2" assignment, the TSV must never carry the value.
+func TestPrintTSVNeverShowsValue(t *testing.T) {
+	winner := &AssignmentSite{File: "/etc/zshrc", Line: 3, LineConf: tracer.LineExact}
+	findings := []Finding{
+		makeStartupFinding("SECRET",
+			[]AssignmentSite{makeSite("/etc/zshrc", 3, "SECRET=hunter2", false, tracer.NonLogin)},
+			map[tracer.Mode]*AssignmentSite{tracer.NonLogin: winner},
+			false, false),
+	}
+	got := renderTSV(t, findings)
+	if strings.Contains(got, "hunter2") {
+		t.Errorf("TSV must never contain the secret value; got:\n%s", got)
+	}
+	if strings.Contains(got, "SECRET=") {
+		t.Errorf("TSV must not render an assignment RHS; got:\n%s", got)
 	}
 }
 

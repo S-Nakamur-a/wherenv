@@ -98,9 +98,10 @@ func TestRunUnsupportedShellDegrades(t *testing.T) {
 	if !strings.Contains(errOut, "unsupported shell") {
 		t.Errorf("expected 'unsupported shell' warning in stderr; got %q", errOut)
 	}
-	// Output should mention the variable is not set (Unset origin).
-	if !strings.Contains(outStr, "not set") {
-		t.Errorf("expected 'not set' in stdout for unset variable; got %q", outStr)
+	// Default output is machine-readable TSV: the Unset origin renders as a
+	// "<name>\tunset\t..." record rather than the human-readable "not set".
+	if !strings.Contains(outStr, "NOTEXIST_WHERENV_B3\tunset\t") {
+		t.Errorf("expected TSV unset record in stdout for unset variable; got %q", outStr)
 	}
 }
 

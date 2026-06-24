@@ -4,10 +4,22 @@
 
 You open a new shell and `PATH` has some entry you don't recognize. Or `EDITOR`
 is `nano` and you have no idea which dotfile is to blame. `wherenv` answers the
-question by tracing what your shell *actually does* at startup:
+question by tracing what your shell *actually does* at startup.
+
+By default it prints one tab-separated record per line — built to pipe into
+`grep`, `awk`, `cut`, and friends:
 
 ```console
 $ wherenv PATH
+PATH	startup	/etc/zprofile	12	exact	login
+PATH	startup	/Users/you/.orbstack/shell/init.zsh	1	exact	login
+PATH	startup	/Users/you/.config/zsh/conf.d/07-tools.zsh	39	exact	login	winner=login
+```
+
+Add `--human` (or `-H`) for the formatted, stack-trace-style view:
+
+```console
+$ wherenv --human PATH
 PATH: set by startup  (3 places, most recent first)
 
   → /Users/you/.config/zsh/conf.d/07-tools.zsh:39   ← ran last
@@ -68,9 +80,11 @@ wherenv [flags] VARNAME [VARNAME...]
 ```
 
 ```sh
-wherenv PATH                  # where is PATH built up?
+wherenv PATH                  # default: tab-separated, one record per line
 wherenv PATH GOPATH EDITOR    # several at once
-wherenv --json PATH           # machine-readable output
+wherenv PATH | awk -F'\t' '$7 ~ /winner/'   # the effective assignment(s)
+wherenv --human PATH          # formatted, human-readable view
+wherenv --json PATH           # JSON (for jq)
 wherenv --mode both PATH      # show how login and non-login differ
 ```
 
@@ -78,10 +92,16 @@ wherenv --mode both PATH      # show how login and non-login differ
 
 | Flag | Default | Description |
 |------|---------|-------------|
+| `--human`, `-H` | off | Human-readable, formatted output instead of the default TSV. |
 | `--mode` | `login` | Shell mode(s) to trace: `login`, `non-login`, or `both`. |
-| `--color` | `auto` | Colorize output: `auto` (TTY only, respects `NO_COLOR`), `always`, `never`. |
-| `--json` | off | Emit JSON instead of human-readable text. |
+| `--color` | `auto` | Colorize the `--human` output: `auto` (TTY only, respects `NO_COLOR`), `always`, `never`. Never applies to TSV/JSON. |
+| `--json` | off | Emit JSON instead of the default TSV. |
 | `--timeout` | 8.0 | Per-spawn timeout in seconds (each traced mode gets this budget). |
+
+The default output is **machine-readable TSV** regardless of whether stdout is a
+terminal, so a pipe or redirect always gets the same clean records. The formatted
+view is opt-in via `--human`. (`-h` is reserved for help, so the short alias is
+`-H`.)
 
 There is intentionally **no flag to show values** — `wherenv` does not have the
 value to show (see [Secrets & memory](#secrets--memory)). When a variable is
@@ -191,7 +211,43 @@ classify variables from the current environment only (inherited / not set).
 
 ## Output
 
-### A variable set during startup
+### Default: tab-separated records (TSV)
+
+The default format is one record per line, with **no header row** (so every line
+is data) and exactly seven tab-separated columns:
+
+| # | Column | Notes |
+|---|--------|-------|
+| 1 | `name` | variable name |
+| 2 | `origin` | `startup`, `inherited`, `toolset`, or `unset` |
+| 3 | `file` | source file (empty when none); terminal-control chars and tabs are neutralized |
+| 4 | `line` | 1-based line number (empty when unknown / not applicable) |
+| 5 | `line_confidence` | `exact`, `best-effort`, or `unknown` (empty when not applicable) |
+| 6 | `modes` | e.g. `login`, `non-login`, `non-login+login` (empty when not applicable) |
+| 7 | `attrs` | comma-separated tokens (empty when none) |
+
+A `startup` variable emits **one line per assignment site** (so you can `grep` by
+file or `cut` the line number); every other origin emits one line. The `attrs`
+column carries the extra semantics:
+
+| Token | Meaning |
+|-------|---------|
+| `winner=<mode>` | this site is the effective last assignment for `<mode>` |
+| `append` | this site used `+=` (cumulative) |
+| `tool=<name>` | the tool that set a `toolset` variable (e.g. `tool=direnv`) |
+| `launchd` | inherited from the macOS launchd session |
+| `incomplete` | the startup trace ended before its sentinel — treat as uncertain |
+
+```console
+$ wherenv PATH EDITOR TERM_PROGRAM NOPE | cat   # cat -> not a TTY, same output
+PATH	startup	/etc/zprofile	12	exact	login
+PATH	startup	/Users/you/.zshrc	39	exact	login	winner=login
+EDITOR	toolset	/Users/you/project/.envrc			tool=direnv
+TERM_PROGRAM	inherited					launchd
+NOPE	unset
+```
+
+### `--human`: a variable set during startup
 
 ```
 PATH: set by startup  (3 places, most recent first)
@@ -218,12 +274,15 @@ spinner, warnings, and `WHERENV_DEBUG` logs go to **stderr**. So
 `wherenv FOO > out.txt` captures just the result, and `wherenv FOO 2>/dev/null`
 silences the progress noise.
 
-### A variable not set by any startup file
+### `--human`: a variable not set by any startup file
 
 ```
 TERM_PROGRAM: present in the environment, not set by any startup file
   → inherited from the parent process, or exported interactively / by a tool (these can't be traced)
 ```
+
+(In the default TSV this is `TERM_PROGRAM⇥inherited⇥…`, with a `launchd` token in
+the `attrs` column when it came from the macOS launchd session.)
 
 `wherenv` only claims what it can prove: the variable is in your environment but
 no traced startup file sets it. It doesn't assert "inherited from the parent",
@@ -231,11 +290,13 @@ because the same observation also covers a value you `export`ed by hand or one a
 runtime hook set. When the variable is present in the macOS `launchd` session,
 `wherenv` says so (`→ set in the launchd session`) instead.
 
-### An unset variable
+### `--human`: an unset variable
 
 ```
 MY_VAR: not set
 ```
+
+(In the default TSV this is `MY_VAR⇥unset`.)
 
 ---
 
