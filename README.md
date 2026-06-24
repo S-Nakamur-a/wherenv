@@ -76,10 +76,11 @@ inherited variables) is macOS-specific; the core tracing relies only on zsh/bash
 ## Usage
 
 ```
-wherenv [flags] VARNAME [VARNAME...]
+wherenv [flags] [VARNAME...]
 ```
 
 ```sh
+wherenv                       # no VARNAME: trace every visible variable (sorted)
 wherenv PATH                  # default: tab-separated, one record per line
 wherenv PATH GOPATH EDITOR    # several at once
 wherenv PATH | awk -F'\t' '$7 ~ /winner/'   # the effective assignment(s)
@@ -87,6 +88,12 @@ wherenv --human PATH          # formatted, human-readable view
 wherenv --json PATH           # JSON (for jq)
 wherenv --mode both PATH      # show how login and non-login differ
 ```
+
+With **no `VARNAME`**, `wherenv` traces every environment variable currently
+visible to the process — the same provenance trace it runs for a single variable,
+applied to all of them and emitted in sorted (variable-name) order. This is still
+a single shell trace per mode: the startup files are sourced once and every
+assignment is attributed, so there is no per-variable spawn.
 
 ### Flags
 
@@ -122,7 +129,7 @@ sources it — use `--mode both` or `--mode non-login` if your settings live in
 |------|---------|
 | 0 | Ran successfully (including "not set"). |
 | 1 | Internal error while formatting output. |
-| 2 | Bad usage: no variable given, or an invalid variable name. |
+| 2 | Bad usage: an invalid variable name or flag. |
 
 Variable names must match `^[A-Za-z_][A-Za-z0-9_]*$`. This is validated up front
 and is also what keeps your input from ever reaching a shell.

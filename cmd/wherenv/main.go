@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"time"
 
 	"github.com/S-Nakamur-a/wherenv/internal/classify"
@@ -43,7 +44,8 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 	modeFlag := fs.String("mode", "login", "shell mode(s) to trace: login | non-login | both")
 	colorFlag := fs.String("color", "auto", "colorize output: auto | always | never (human output only)")
 	fs.Usage = func() {
-		fmt.Fprintln(stderr, "usage: wherenv [flags] VARNAME [VARNAME...]")
+		fmt.Fprintln(stderr, "usage: wherenv [flags] [VARNAME...]")
+		fmt.Fprintln(stderr, "With no VARNAME, wherenv traces every variable currently visible in the environment.")
 		fmt.Fprintln(stderr, "wherenv reports WHERE each variable was set; it never reads or prints values.")
 		fmt.Fprintln(stderr, "Default output is machine-readable TSV; use --human/-H for the formatted view.")
 		fmt.Fprintln(stderr, "WARNING: wherenv executes your real shell startup files as a side effect of tracing.")
@@ -53,12 +55,10 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 		// ContinueOnError: fs.Parse writes the error to stderr; we return 2.
 		return 2
 	}
+	// keys is the list of variable names to trace. When empty (no VARNAME given),
+	// it is filled in below from the env snapshot so that a bare `wherenv` traces
+	// every visible variable.
 	keys := fs.Args()
-
-	if len(keys) == 0 {
-		fs.Usage()
-		return 2
-	}
 
 	// ── Validate --timeout ────────────────────────────────────────────────────
 	if *timeoutSec <= 0 {
@@ -106,6 +106,20 @@ func run(args []string, getenv func(string) string, stdout, stderr io.Writer) in
 
 	// ── Env snapshot ──────────────────────────────────────────────────────────
 	snap := env.Snapshot()
+
+	// No VARNAME given: trace every variable currently visible to the process.
+	// The names come from the snapshot (presence only — values were already
+	// dropped) and are sorted so the report reads in a predictable order. A single
+	// trace spawn still covers them all: the tracer records every assignment and
+	// the key set is only used to filter the parsed events.
+	if len(keys) == 0 {
+		keys = envKeys(snap)
+		if len(keys) == 0 {
+			// Degenerate case: nothing valid to trace. Nothing to report.
+			fmt.Fprintln(stderr, "wherenv: no environment variables to trace")
+			return 0
+		}
+	}
 
 	// keysSet used by tracers (S2: never interpolated into shell argv).
 	keysSet := make(map[string]struct{}, len(keys))
@@ -222,6 +236,25 @@ func elevateOrigins(findings []report.Finding, snap map[string]string, miseSourc
 		// 3. launchctl: macOS session-level env store (S5: no shell interpolation).
 		findings[i].InheritedFromLaunchd = launchctlProbe(findings[i].Name)
 	}
+}
+
+// envKeys returns the names of every variable in the snapshot that is a valid
+// shell identifier, sorted lexicographically. It backs the no-argument
+// invocation, where wherenv traces all visible variables.
+//
+// Names that don't match validKey (e.g. bash's exported-function entries like
+// "BASH_FUNC_foo%%") are skipped: they aren't assignment targets we can trace,
+// and dropping them preserves the S1 invariant that every traced key matches the
+// regex — so the names that reach the tracer can never carry shell metacharacters.
+func envKeys(snap map[string]string) []string {
+	keys := make([]string, 0, len(snap))
+	for k := range snap {
+		if validKey.MatchString(k) {
+			keys = append(keys, k)
+		}
+	}
+	slices.Sort(keys)
+	return keys
 }
 
 // isTerminalWriter reports whether w is a character device (a TTY). Used to
